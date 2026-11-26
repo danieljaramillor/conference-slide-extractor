@@ -209,7 +209,7 @@ def apply_presenter_crops(source, items, pool, thumbs):
 
     def verify_layout(item):
         image = decode(source.read(item['name']))
-        matches = [crop for crop, anchor in profiles if (observed := broadcast_crop_profile(image, crop)) is not None
+        matches = [crop for crop, anchor in profiles if (observed := broadcast_crop_profile(image, crop, require_canvas=True)) is not None
                    and np.mean(cv2.absdiff(observed, anchor)) <= 4]
         return (item, matches[0]) if len(matches) == 1 else None
 

@@ -57,6 +57,20 @@ class SessionTextTests(unittest.TestCase):
         self.assertEqual(table['rows'][1], ['Group B','-8.2%','6'])
         self.assertIsNone(result['printed_slide_number'])
 
+    def test_unpopulated_lane_between_boxes_is_not_a_table_column(self):
+        image = grid_slide()
+        for top, bottom in ((210,290),(290,370),(370,450)):
+            image[top+3:bottom-3,423:727] = 255
+        lines = []
+        for row, pair in enumerate((('Group','Follow-up'),('A','12 months'),('B','9 months'))):
+            y = 237+80*row
+            for x, text in zip((136,756),pair):
+                lines.append({'text':text,'score':.98,'box':[[x,y],[x+130,y],[x+130,y+27],[x,y+27]]})
+        ocr = {'status':'ok','text':'\n'.join(line['text'] for line in lines),'lines':lines}
+        record=slide_text_record(1,'schema.png',image,ocr)
+        self.assertFalse(record['tables'])
+        self.assertEqual(record['text'],ocr['text'])
+
     def test_export_rebuilds_records_for_review_order_crop_and_exclusions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

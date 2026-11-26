@@ -89,7 +89,9 @@ def _ruled_tables(image, boxes):
                 partial = True
                 continue
             populated.setdefault((row,column), []).append(box)
-        if len(populated) < max(4, (len(ys)-1)*(len(xs)-1)*.30):
+        # A blank full-width division often separates two flowchart lanes.
+        # Preserve those lanes in the raw text without treating the gap as a column.
+        if len(populated) < max(4, (len(ys)-1)*(len(xs)-1)*.30) or len({col for _,col in populated}) < len(xs)-1:
             continue
         rows = []
         for row in range(len(ys)-1):

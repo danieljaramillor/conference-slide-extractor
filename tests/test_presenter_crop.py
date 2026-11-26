@@ -4,7 +4,8 @@ import cv2
 import numpy as np
 
 from presenter_fixtures import SLIDE_BOUNDS, presenter_capture_sequence
-from slide_regions import confirmed_presenter_crops, extract, presenter_layout
+from slide_regions import broadcast_crop_profile, confirmed_presenter_crops, extract, presenter_layout
+from speaker_fixtures import load_portrait
 
 
 class PresenterCropTests(unittest.TestCase):
@@ -75,6 +76,17 @@ class PresenterCropTests(unittest.TestCase):
         cv2.putText(dark_slide, 'Study methods and personnel', (40, 93),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.7, (238, 238, 238), 2)
         self.assertIsNone(presenter_layout(dark_slide))
+
+    def test_broadcast_reuse_requires_a_slide_inside_the_main_pane(self):
+        frame = self.frames[0]
+        left, top, right, bottom = SLIDE_BOUNDS
+        height, width = frame.shape[:2]
+        crop = (left/width, top/height, right/width, bottom/height)
+        self.assertIsNotNone(broadcast_crop_profile(frame, crop, require_canvas=True))
+        camera = frame.copy()
+        camera[top:bottom, left:right] = cv2.resize(load_portrait(), (right-left, bottom-top))
+        self.assertIsNotNone(broadcast_crop_profile(camera, crop))
+        self.assertIsNone(broadcast_crop_profile(camera, crop, require_canvas=True))
 
 
 if __name__ == '__main__':

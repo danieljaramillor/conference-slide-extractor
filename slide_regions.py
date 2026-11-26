@@ -88,7 +88,7 @@ def _uniform_rows(image):
     return np.mean(np.max(np.abs(image - colors), axis=2) < 17)
 
 
-def broadcast_crop_profile(image, crop):
+def broadcast_crop_profile(image, crop, *, require_canvas=False):
     """Verify an already observed broadcast crop against this frame's edges."""
     height, width = image.shape[:2]
     if width < 320 or height < 180:
@@ -118,6 +118,15 @@ def broadcast_crop_profile(image, crop):
                (small[y1+8:y2-8,edge-3], small[y1+8:y2-8,edge+2]))
     if any(np.mean(cv2.absdiff(a,b).max(axis=1) >= 24) < .82 for a,b in stripes):
         return None
+    if require_canvas:
+        # The broadcast can use the same rectangle for a full camera shot.
+        # Require stable slide colors and text before inheriting the crop.
+        panel = small[y1:y2, x1:x2]
+        colors = (panel[::2, ::2].reshape(-1, 3) // 16).astype(np.int32)
+        palette = np.bincount(colors @ [1, 16, 256], minlength=4096)
+        if (palette.max() < .31*len(colors) or np.partition(palette, -4)[-4:].sum() < .66*len(colors)
+                or _text_strokes(cv2.cvtColor(panel, cv2.COLOR_BGR2GRAY)) < 35):
+            return None
     return np.vstack([cv2.resize(band, (72, 12), interpolation=cv2.INTER_AREA) for band in (header, footer)])
 
 
