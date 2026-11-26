@@ -32,6 +32,8 @@ Each scan and reviewed ZIP includes `slides.jsonl`, a UTF-8 text file with one J
 
 Export checks selected native images for small text and selectively runs a higher-resolution OCR pass. Tables store rows as arrays of text cells in reading order. The app uses visible grid lines and consistent alignment of recognized labels, headers, and values. Aligned tables include `cell_bounds` for cells with source coordinates. If a text box crosses a grid line, the app attempts to read the affected cells individually. `review_cells` identifies unresolved cells by one-based row and column and pixel bounds on the exported PNG. Those cells contain `null`. `cell_sources` identifies cells recovered by a local reread. `partial` and `inferred_rows` indicate where the structure or coverage merits a check. The per-slide `.txt` and OCR coordinate files remain in `text/`.
 
+When a survival chart has a supported risk-count strip, the app checks its labels and time-axis positions and rereads each count from a separate crop. The resulting `risk_count_strip` table includes the time points, cell coordinates and any counts that still need review.
+
 ## Where files are stored
 
 The app stores per-batch inputs, results, review decisions, logs, and OCR cache under `%LOCALAPPDATA%\Conference Slide Extractor\batches`. Paste that path into File Explorer to find it. Keep the same Windows user and data folder when replacing the executable with a new release. To choose a different data folder, run the executable with `--data`.

@@ -40,6 +40,20 @@ def grid_ocr(response_box):
 
 
 class SessionTextTests(unittest.TestCase):
+    def test_export_adds_verified_risk_strip_and_keeps_slide_text(self):
+        image = grid_slide()
+        ocr = grid_ocr([[446,312], [578,312], [578,343], [446,343]])
+        other = {'bounds': [60, 50, 280, 130], 'rows': [['Group'], ['A']]}
+        old_strip = {'bounds': [240, 540, 720, 580], 'rows': [['Events'], ['018']]}
+        risk_strip = {'method': 'risk_count_strip', 'bounds': [220, 520, 760, 600],
+                      'rows': [['Months', '0', '3'], ['At risk', '18', '17'], ['Events', '0', '1']]}
+        with (patch('slide_text._ruled_tables', return_value=([other, old_strip], [])),
+              patch('slide_text.aligned_tables', return_value=[]),
+              patch('slide_text.risk_count_table', return_value=risk_strip)):
+            record = slide_text_record(1, 'survival.png', image, ocr)
+        self.assertEqual(record['text'], ocr['text'])
+        self.assertEqual(record['tables'], [other, risk_strip])
+
     def test_recovers_ruled_table_and_explicit_page_from_real_ocr(self):
         image = grid_slide()
         with TemporaryDirectory() as directory:

@@ -27,7 +27,7 @@ from slide_text import SESSION_TEXT, slide_text_record
 from slide_transitions import EXCLUSION_REASON, capture_runs, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.14.0'
+APP_VERSION = '2.15.0'
 cv2.setNumThreads(1)
 
 

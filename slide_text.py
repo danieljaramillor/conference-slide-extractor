@@ -6,6 +6,7 @@ from bisect import bisect_left, bisect_right
 import cv2
 import numpy as np
 
+from slide_risk import risk_count_table
 from slide_tables import aligned_tables, combine_tables, value_text
 
 
@@ -196,6 +197,12 @@ def slide_text_record(number, name, image, ocr):
     boxes = _ocr_boxes(ocr) if status == 'ok' else []
     tables, grid_bounds = _ruled_tables(image, boxes) if len(boxes) >= 4 else ([], [])
     tables = combine_tables(tables, grid_bounds, aligned_tables(boxes, image.shape[1], grid_bounds, tables))
+    if len(boxes) >= 4 and (strip := risk_count_table(image, boxes)):
+        left, top, right, bottom = strip['bounds']
+        tables = [table for table in tables if not (
+            left <= table['bounds'][0] and top <= table['bounds'][1]
+            and right >= table['bounds'][2] and bottom >= table['bounds'][3])]
+        tables.append(strip)
     return {'slide_number': number, 'printed_slide_number': _printed_number(boxes, image.shape[0]),
             'source': name, 'ocr_status': status, 'text': ocr['text'] if status == 'ok' else None,
             'tables': sorted(tables, key=lambda table: (table['bounds'][1], table['bounds'][0]))}
