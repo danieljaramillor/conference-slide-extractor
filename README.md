@@ -12,7 +12,7 @@ The executable bundles Python, the OCR models, and their dependencies. It runs w
 
 ## Process and review a batch
 
-1. Choose a ZIP of screenshots and select **Extract slides**. Progress appears in **Batches**. Select **Review slides** when it finishes.
+1. Drop a screenshot ZIP into the dashboard or select **Choose ZIP**. Select **Extract slides**, follow its progress in **Batches**, then select **Review slides**.
 2. In **Compare pairs**, inspect the two images. Choose **Keep both slides** if either contains unique information. For a duplicate or an additive build, select **Merge, keep left** or **Merge, keep right** to retain the better or more complete capture. Click either image to enlarge it. Use **Next** to skip a pair and **Undo last pair decision** to reverse a choice.
 3. In **Slide issues**, check low-resolution or unclear crops. Open **All slides** to browse the full set, inspect alternate captures, or restore a slide from the **Excluded** filter.
 4. Select **Export ZIP…** and choose the folder and filename in the Save As dialog. If your browser shows **Export slides**, select **Download export ZIP** when it’s ready. The archive contains native-resolution PNGs, original captures, recognized text, line coordinates, and a CSV mapping. Open the same app and batch later to continue a saved review.

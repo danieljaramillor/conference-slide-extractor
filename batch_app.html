@@ -4,30 +4,42 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Conference Slide Extractor</title>
-  <style>
-    :root{color-scheme:dark;font:16px system-ui,sans-serif;color:#eaf0f4;background:#101820}
-    *{box-sizing:border-box}body{max-width:960px;margin:0 auto;padding:44px 24px}h1{font-size:clamp(28px,5vw,42px);margin:0 0 10px;letter-spacing:-.035em}h2{font-size:19px;margin:0 0 14px}p{color:#b7c7d3;line-height:1.5;margin:0 0 14px}.panel{margin-top:28px;padding:22px;background:#1a2834;border:1px solid #364b5f;border-radius:12px}.form,.row{display:flex;gap:16px;justify-content:space-between;align-items:center;flex-wrap:wrap}.row{padding:16px 0;border-bottom:1px solid #364b5f}.row:last-child{border-bottom:0}.name{font-weight:650;overflow-wrap:anywhere}.details{font-size:.9rem;margin-top:5px;color:#b7c7d3}button,.action{border:0;border-radius:7px;background:#79ddd2;color:#0b2328;padding:10px 15px;font:inherit;font-weight:650;text-decoration:none;cursor:pointer}button:disabled{opacity:.55;cursor:default}input{max-width:100%;font:inherit}progress{width:100%;margin-top:12px;accent-color:#79ddd2}#status{margin-top:12px;margin-bottom:0}.error{color:#ffc2b4}.pill{color:#a4e5dc;font-size:.86rem;font-weight:650}.form label{display:block;margin-bottom:6px}
-  </style>
+  <style>__APP_STYLE__</style>
 </head>
 <body>
-  <header><h1>Conference Slide Extractor</h1><p>Turn a ZIP of conference screenshots into selected slides and searchable text.</p></header>
-  <section class="panel" aria-labelledby="new-title">
-    <h2 id="new-title">New batch</h2>
-    <form id="submit" class="form">
-      <div><label for="archive">Screenshot ZIP</label><input id="archive" type="file" accept=".zip,application/zip" required></div>
-      <button id="start" type="submit" disabled>Extract slides</button>
-    </form>
-    <progress id="transfer" max="100" hidden aria-label="ZIP transfer progress"></progress>
-    <p id="status" role="status" aria-live="polite" hidden></p>
-  </section>
-  <section class="panel" aria-labelledby="batches-title">
-    <h2 id="batches-title">Batches</h2>
-    <div id="jobs"><p>Loading batches…</p></div>
-  </section>
+  <header class="site-bar shell">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Conference Slide Extractor</div>
+    <span class="status-chip">Local processing</span>
+  </header>
+  <main class="dashboard-main shell">
+    <section class="intake-panel glass" aria-labelledby="new-title">
+      <div class="hero-copy">
+        <h1 id="new-title">From captures<br>to <em>slides.</em></h1>
+        <p>Turn a ZIP of conference screenshots into distinct slides with searchable text.</p>
+      </div>
+      <form id="submit" class="intake-form">
+        <div id="drop-zone" class="drop-zone">
+          <span class="upload-mark" aria-hidden="true">↑</span>
+          <h2>Drop a screenshot ZIP</h2>
+          <p id="file-name" class="file-name" aria-live="polite">Or choose a file from your device</p>
+          <label class="file-button">Choose ZIP<input id="archive" type="file" accept=".zip,application/zip" required></label>
+        </div>
+        <button id="start" class="primary" type="submit" disabled>Extract slides</button>
+        <progress id="transfer" max="100" hidden aria-label="ZIP transfer progress"></progress>
+        <p id="status" class="notice" role="status" aria-live="polite" hidden></p>
+      </form>
+    </section>
+    <section class="batch-section" aria-labelledby="batches-title">
+      <div class="section-title"><h2 id="batches-title">Batches</h2><span id="batch-count" class="section-count"></span></div>
+      <div id="jobs" class="jobs-list"><p class="empty-jobs">Loading batches…</p></div>
+    </section>
+  </main>
   <script>
     const token = '__UPLOAD_TOKEN__';
     const archive = document.getElementById('archive');
     const start = document.getElementById('start');
+    const dropZone = document.getElementById('drop-zone');
+    const fileName = document.getElementById('file-name');
     const status = document.getElementById('status');
     const transfer = document.getElementById('transfer');
     const jobs = document.getElementById('jobs');
@@ -45,21 +57,35 @@
       start.disabled = busy || uploading || !archive.files.length;
     }
 
+    function updateSelection() {
+      fileName.textContent = archive.files[0]?.name || 'Or choose a file from your device';
+      updateButton();
+    }
+
     function renderBatches(batches) {
       jobs.replaceChildren();
+      document.getElementById('batch-count').textContent = batches.length || '';
       if (!batches.length) {
-        jobs.append('Submitted batches will appear here.');
+        const empty = document.createElement('p');
+        empty.className = 'empty-jobs';
+        empty.textContent = 'Submitted batches will appear here.';
+        jobs.append(empty);
         return;
       }
       for (const batch of batches) {
         const row = document.createElement('article');
-        row.className = 'row';
+        row.className = 'job-row';
+        const icon = document.createElement('span');
+        icon.className = 'job-icon';
+        icon.textContent = '▤';
+        icon.setAttribute('aria-hidden', 'true');
+        row.append(icon);
         const info = document.createElement('div');
         const name = document.createElement('div');
-        name.className = 'name';
+        name.className = 'job-name';
         name.textContent = batch.name;
         const details = document.createElement('div');
-        details.className = 'details';
+        details.className = 'job-details';
         if (batch.state === 'ready') {
           const stats = batch.stats;
           details.textContent = `${stats.processed}/${stats.input_images} captures processed · ${stats.selected} selected · ${stats.needs_review} to check`;
@@ -72,7 +98,7 @@
         } else {
           const state = document.createElement('div');
           const failed = batch.state === 'failed';
-          state.className = failed ? 'pill error' : 'pill';
+          state.className = failed ? 'status-chip error' : 'status-chip';
           state.textContent = failed ? 'Failed' : 'In progress';
           details.textContent = batch.progress;
           row.append(info, state);
@@ -100,7 +126,29 @@
       updateButton();
     }
 
-    archive.addEventListener('change', updateButton);
+    archive.addEventListener('change', updateSelection);
+    dropZone.addEventListener('dragover', event => {
+      if (!event.dataTransfer.types.includes('Files')) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = uploading ? 'none' : 'copy';
+      dropZone.classList.toggle('is-dragging', !uploading);
+    });
+    dropZone.addEventListener('dragleave', event => {
+      if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove('is-dragging');
+    });
+    dropZone.addEventListener('drop', event => {
+      event.preventDefault();
+      dropZone.classList.remove('is-dragging');
+      if (uploading) return;
+      const files = event.dataTransfer.files;
+      if (files.length !== 1 || !/\.zip$/i.test(files[0].name)) {
+        message('Drop one screenshot ZIP file.', true);
+        return;
+      }
+      archive.files = files;
+      message('');
+      updateSelection();
+    });
     document.getElementById('submit').addEventListener('submit', event => {
       event.preventDefault();
       const file = archive.files[0];
@@ -120,6 +168,7 @@
       request.onload = () => {
         if (request.status === 202) {
           archive.value = '';
+          updateSelection();
           message('ZIP received. Follow processing in Batches.');
         } else {
           let error = 'The ZIP could not be submitted.';

@@ -21,7 +21,7 @@ from PIL import Image, ImageOps
 from slide_regions import detect_region, extract, quality, recover_projected_screen
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.3.0'
+APP_VERSION = '2.4.0'
 cv2.setNumThreads(1)
 
 
@@ -350,8 +350,9 @@ def export(source, manifest, dest, overrides=None, crops=None):
 
 def review_page(manifest):
     template = Path(__file__).with_name('review_template.html').read_text(encoding='utf-8')
+    style = Path(__file__).with_name('app.css').read_text(encoding='utf-8')
     payload = json.dumps(manifest).replace('<', '\\u003c')
-    return template.replace('__MANIFEST__', payload)
+    return template.replace('__APP_STYLE__', style).replace('__MANIFEST__', payload)
 
 
 def report(out, manifest):

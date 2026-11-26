@@ -75,7 +75,7 @@ def review_handler(directory):
                     encoded=json.dumps(saved).replace('<','\\u003c')
                     body=body.replace('const data=',f'const REVIEW_TOKEN={json.dumps(token)};const SAVED_REVIEW={encoded};\nconst data=',1)
                     if getattr(self, 'from_dashboard', False):
-                        body=body.replace('<header>', '<header><a href="/">Back to batches</a>', 1)
+                        body=body.replace('<!-- BATCH_LINK -->', '<a href="/"><span aria-hidden="true">← </span>Back to batches</a>', 1)
                     return self.respond(body.encode('utf-8'),'text/html; charset=utf-8')
                 if path.startswith(('/native/','/source/')):
                     image_id=int(Path(path).stem)

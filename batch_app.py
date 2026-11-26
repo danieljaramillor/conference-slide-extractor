@@ -203,7 +203,9 @@ def build_app(directory, port=0, workers=8, ocr_workers=4, existing=None, max_up
                 return self.respond({'error': 'Local application requests only'}, status=403)
             if self.path == '/':
                 page = (APP_DIR / 'batch_app.html').read_text(encoding='utf-8')
-                return self.respond(page.replace('__UPLOAD_TOKEN__', upload_token).encode('utf-8'), 'text/html; charset=utf-8')
+                style = (APP_DIR / 'app.css').read_text(encoding='utf-8')
+                page = page.replace('__APP_STYLE__', style).replace('__UPLOAD_TOKEN__', upload_token)
+                return self.respond(page.encode('utf-8'), 'text/html; charset=utf-8')
             if self.path == '/jobs':
                 return self.respond(batches.list())
             return self.mount_review('GET')

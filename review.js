@@ -53,10 +53,10 @@ function compareSide(group,side){
  const image=images.get(group.representative);
  const src=server||image.native_preview?nativeURL(image.id):`thumbs/${image.id}.jpg`;
  return `<article class="compare-side">
-  <button class="preview-button" data-zoom="${image.id}" aria-label="Enlarge ${side.toLowerCase()} slide"><img src="${src}" alt="${side} slide preview"></button>
-  <div class="info"><h3>${side} · Group ${group.id}</h3>
+  <div class="info"><h3><span class="side-marker" aria-hidden="true"></span>${side} · Group ${group.id}</h3>
   <div class="side-info">${group.members.length} captures · ${image.slide_width||'?'} × ${image.slide_height||'?'} px</div>
-  <div class="file">${esc(image.name.split(/[\\/]/).pop())}</div></div></article>`;
+  <div class="file">${esc(image.name.split(/[\\/]/).pop())}</div></div>
+  <button class="preview-button" data-zoom="${image.id}" aria-label="Enlarge ${side.toLowerCase()} slide"><img src="${src}" alt="${side} slide preview"></button></article>`;
 }
 function renderComparison(queue){
  pairIndex=Math.max(0,Math.min(pairIndex,queue.length-1));
@@ -117,8 +117,8 @@ function render(){
  $('errors').hidden=data.errors.length===0;
  $('errors').querySelector('summary').textContent=`${data.errors.length} images could not be read`;
  $('errors').querySelector('pre').textContent=data.errors.map(e=>e.name+': '+e.error).join('\n');
- $('compare-tab').textContent=`Compare pairs (${queue.length})`;
- $('issues-tab').textContent=`Slide issues (${review})`;
+ $('pair-count').textContent=queue.length;
+ $('issue-count').textContent=review;
  for(const view of ['compare','issues','slides'])$(view+'-tab').setAttribute('aria-pressed',view===activeView);
  $('comparison-view').hidden=activeView!=='compare';
  $('slide-view').hidden=activeView==='compare';
@@ -157,7 +157,8 @@ $('grid').onchange=e=>{
 };
 document.addEventListener('click',e=>{
  const d=e.target.dataset;
- if(d.zoom){const id=+d.zoom;$('lightbox').style.display='flex';$('lightbox').querySelector('img').src=nativeURL(id);$('caption').textContent=images.get(id).name+(server||images.get(id).native_preview?' · native-resolution preview':' · thumbnail; start the local server for the native image')}
+ const zoom=e.target.closest('[data-zoom]');
+ if(zoom){const id=+zoom.dataset.zoom;$('lightbox').style.display='flex';$('lightbox').querySelector('img').src=nativeURL(id);$('caption').textContent=images.get(id).name+(server||images.get(id).native_preview?' · native-resolution preview':' · thumbnail; start the local server for the native image')}
  if(d.split){const id=+d.split,g=owner(id);g.members=g.members.filter(i=>i!==id);if(g.representative===id)g.representative=g.members[0];g.acknowledged=false;groups.push({id:Math.max(...groups.map(g=>g.id))+1,representative:id,members:[id],builds:0,needs_review:true,review_reasons:['check split capture']});lastPairDecision=null;persist();render();notify('Capture split.')}
  if(d.crop&&server){cropId=+d.crop;$('cropdialog').style.display='flex';$('cropsource').src=`source/${cropId}.png`;cropFields(crops[cropId]||images.get(cropId).crop)}
 });

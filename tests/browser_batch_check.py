@@ -40,6 +40,15 @@ def check(program, python, fixture, screenshot):
                 page.locator('#start').click()
                 page.get_by_text('The selected file is not a readable ZIP archive.').first.wait_for()
                 page.locator('#archive').set_input_files(fixture)
+                page.evaluate("""() => {
+                  const input = document.querySelector('#archive');
+                  const transfer = new DataTransfer();
+                  transfer.items.add(input.files[0]);
+                  input.value = '';
+                  document.querySelector('#drop-zone').dispatchEvent(
+                    new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+                }""")
+                assert page.locator('#file-name').inner_text() == Path(fixture).name
                 page.locator('#start').click()
                 page.get_by_role('link', name='Review slides').wait_for(timeout=90_000)
                 page.screenshot(path=str(screenshot))
