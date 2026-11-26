@@ -22,6 +22,12 @@ The expanded sample includes two posters, three oral presentations, and a longer
 
 The crop detector uses stable framing and independent presenter motion across a sequence, or a consistent pane confirmed by two adjacent captures. It keeps the full source capture alongside the crop. Tests cover both pane positions, static layouts, an interruption in capture order, unrelated broadcast framing, and a portrait that belongs to the slide itself.
 
+## Dense tables in v2.10.1
+
+The same 118-capture ESMO ZIP now exports 22 slides. The three captures of the repeated poster table belong to one group and produce one PNG and one OCR export. The two existing crop checks remain. The fix matches table cells by position before comparing their values. When OCR joins adjacent rows, the scan clears the conflict only if the native text region agrees within tight image-noise tolerances.
+
+The packaged test uses real offline OCR on a compact table. It merges three captures with the same values despite JPEG noise and pointer movement. Changing 47.8 to 42.8 yields a separate slide and preserves both values in the OCR exports. Numeric evidence tests also cover a changed value that coincides with the next row, a merged OCR box, and a one-pixel decimal change.
+
 These figures describe the sampled ZIP. Source screenshots, text, and test exports are kept with the local QA data.
 
 ## Repeat the checks

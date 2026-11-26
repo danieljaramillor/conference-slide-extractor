@@ -16,6 +16,7 @@ import cv2
 
 ENGINE_VERSION='rapidocr-3.10-v6-small-det960-v1'
 _local=threading.local()
+_NUMBER = re.compile(r'\d+(?:[.,]\d+)?')
 
 
 def engine():
@@ -115,45 +116,73 @@ def signature(item):
     for line in lines:
         text=numeric_text(line['text'])
         rich.append({**line,'center':np.asarray(line['box']).mean(axis=0)/[item['slide_width'],item['slide_height']],
-                     'numbers':re.findall(r'\d+(?:[.,]\d+)?',text),
-                     'template':re.sub(r'\d+(?:[.,]\d+)?','#',normalized(text))})
+                     'numbers':_NUMBER.findall(text),
+                     'template':' '.join(re.findall(r'\w+|#', _NUMBER.sub('#', text)))})
     item['_text_signature']=(tokens,normalized(' '.join(l['text'] for l in headings)),rich)
     return item['_text_signature']
 
 
-def text_evidence(a,b):
+def _numeric_lines(item, lines):
+    min_footer_height = item.get('ocr', {}).get('median_text_height', 20) * .70
+    return [line for line in lines if line['score'] >= .92 and line['numbers']
+            and (line['center'][1] <= .80 or line.get('height', 0) >= min_footer_height)]
+
+
+def _matched_numeric_lines(a, b):
+    # Find corresponding table cells before interpreting their values. An already
+    # matching cell must compete for its partner with the neighboring rows.
+    nearest_a, nearest_b = {}, {}
+    for i, line_a in enumerate(a):
+        for j, line_b in enumerate(b):
+            dx, dy = line_a['center'] - line_b['center']
+            if max(abs(dx), abs(dy)) > .025:
+                continue
+            if SequenceMatcher(None, line_a['template'], line_b['template']).ratio() <= .90:
+                continue
+            distance = dx * dx + dy * dy
+            nearest_a[i] = min(nearest_a.get(i, (distance, j)), (distance, j))
+            nearest_b[j] = min(nearest_b.get(j, (distance, i)), (distance, i))
+    for i, (_, j) in nearest_a.items():
+        if nearest_b[j][1] == i and a[i]['numbers'] != b[j]['numbers']:
+            yield a[i], b[j]
+
+
+def _same_numeric_pixels(left, right, a, b):
+    # An OCR segmentation error can change the transcription of an unchanged cell.
+    # Clear it only when the native pixels already agree in both OCR boxes.
+    if left.shape != right.shape:
+        return False
+    height, width = left.shape[:2]
+    corners = np.concatenate((a['box'], b['box']))
+    x1, y1 = np.maximum(np.floor(corners.min(axis=0)).astype(int) - 2, 0)
+    x2, y2 = np.minimum(np.ceil(corners.max(axis=0)).astype(int) + 2, [width, height])
+    if x2 - x1 < 3 or y2 - y1 < 3:
+        return False
+    delta = cv2.absdiff(left[y1:y2, x1:x2], right[y1:y2, x1:x2]).max(axis=2)
+    if delta.max() > 16 or delta.mean() > 4:
+        return False
+    # JPEG noise can move individual pixels. A connected change in a glyph is
+    # enough to preserve the OCR conflict even when the contrast is low.
+    _, _, regions, _ = cv2.connectedComponentsWithStats((delta > 9).astype(np.uint8))
+    return regions[1:, cv2.CC_STAT_AREA].max(initial=0) < 4
+
+
+def text_evidence(a,b,*,native_pair=None):
     ta,ha,la=signature(a); tb,hb,lb=signature(b)
     shared=sum((ta&tb).values())
     ca=shared/max(1,sum(ta.values())); cb=shared/max(1,sum(tb.values()))
     heading=SequenceMatcher(None,ha,hb).ratio() if ha and hb else 0.
-    conflict=False
     numeric_changes=[]
-    # A confidently read number change on the same text line blocks auto-merging.
-    for x in la if (max(ca,cb)>.65 or heading>.80) else []:
-        if x['score']<.92:
-            continue
-        nx=x['numbers']
-        if not nx:
-            continue
-        bx=x['center']
-        if bx[1]>.80 and x.get('height',0)<a.get('ocr',{}).get('median_text_height',20)*.70:
-            continue # Footer citations and tiny superscripts are not reliable numeric evidence.
-        template_x=x['template']
-        for y in lb:
-            if y['score']<.92:
+    if max(ca,cb)>.65 or heading>.80:
+        images = None
+        for line_a, line_b in _matched_numeric_lines(_numeric_lines(a, la), _numeric_lines(b, lb)):
+            if native_pair is not None and images is None:
+                images = native_pair()
+            if images is not None and _same_numeric_pixels(*images, line_a, line_b):
                 continue
-            by=y['center']
-            if np.max(np.abs(bx-by))>.025:
-                continue
-            ny=y['numbers']
-            template_y=y['template']
-            if ny and nx!=ny and SequenceMatcher(None,template_x,template_y).ratio()>.90:
-                conflict=True
-                numeric_changes.append([x['text'],y['text']])
-                break
-        if conflict:
+            numeric_changes.append([line_a['text'], line_b['text']])
             break
     return {'text_cover_a':round(ca,4),'text_cover_b':round(cb,4),
-            'heading_similarity':round(heading,4),'numeric_conflict':conflict,
+            'heading_similarity':round(heading,4),'numeric_conflict':bool(numeric_changes),
             'numeric_changes':numeric_changes,
             'text_words_a':sum(ta.values()),'text_words_b':sum(tb.values())}

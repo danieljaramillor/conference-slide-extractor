@@ -25,6 +25,51 @@ def embed(slide,size,rect,background=(100,65,45)):
     return frame
 
 
+def compact_table_captures():
+    """One table repeated through cursor movement and another with a changed cell."""
+    def slide(response, cursor=None):
+        image = np.full((1000, 1600, 3), 248, np.uint8)
+        ink = (37, 31, 25)
+
+        def text(words, x, y, scale, weight=2):
+            cv2.putText(image, words, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, ink, weight, cv2.LINE_AA)
+
+        text('Outcomes by treatment group', 102, 110, 1.65, 3)
+        text('Observed events and response over the full follow-up period', 104, 179, .82)
+        image[245:292, 140:1460] = (234, 228, 214)
+        for header, x in (('Outcome measures', 165), ('Group A', 790), ('Group B', 1080)):
+            text(header, x, 276, .73)
+        rows = (
+            ('Overall response', f'{response} (80.0)', '11 (73.3)'),
+            ('Complete response', '1 (20.0)', '2 (13.3)'),
+            ('Partial response', '3 (60.0)', '9 (60.0)'),
+            ('Disease progression', '8 (53.3)', '7 (46.7)'),
+            ('Unconfirmed response', '2 (13.3)', '3 (20.0)'),
+        )
+        for index, (label, first, second) in enumerate(rows):
+            y = 332 + index * 23
+            text(label, 165, y, .63)
+            text(first, 798, y, .65)
+            text(second, 1088, y, .65)
+            cv2.line(image, (140, y + 6), (1459, y + 6), (225, 225, 225), 1)
+        text('Independent central review and data reconciliation', 108, 610, .94)
+        text('All outcomes were assessed using the same protocol', 108, 674, .84)
+        text('Table complete', 108, 851, .85)
+        if cursor:
+            pointer = np.array([(0, 0), (0, 25), (7, 18), (12, 27), (16, 24), (11, 15), (20, 15)], np.int32)
+            pointer += cursor
+            cv2.fillPoly(image, [pointer], (24, 24, 24), cv2.LINE_AA)
+            cv2.polylines(image, [pointer], True, (255, 255, 255), 1, cv2.LINE_AA)
+        return image
+
+    return [
+        ('table_00.png', slide('47.8')),
+        ('table_01.jpg', slide('47.8', (1400, 701))),
+        ('table_02.jpg', slide('47.8', (1350, 713))),
+        ('table_03.png', slide('42.8')),
+    ]
+
+
 def fixtures():
     wide=make_slide()
     standard=make_slide(1440,1080,'Four by three slide')

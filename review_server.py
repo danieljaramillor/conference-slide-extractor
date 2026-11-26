@@ -114,7 +114,10 @@ def review_handler(directory):
                     (left,left_item),(right,right_item)=results
                     evidence=compare_captures(left,right,left_item,right_item)
                     if any(crops) and all(images[image_id].get('ocr',{}).get('status')=='ok' for image_id in ids):
-                        original=text_evidence(*(images[image_id].copy() for image_id in ids))
+                        def original_previews():
+                            return tuple(native_capture(image_id, verify_source=True)[0] for image_id in ids)
+                        original=text_evidence(*(images[image_id].copy() for image_id in ids),
+                                               native_pair=original_previews)
                         evidence['numeric_conflict'] |= original['numeric_conflict']
                     return self.respond(evidence)
                 if path=='/review.js':

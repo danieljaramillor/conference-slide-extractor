@@ -182,7 +182,7 @@ def compare_captures(left, right, left_item=None, right_item=None):
     evidence = {}
     if left_item and right_item and all(item.get('ocr', {}).get('status') == 'ok'
                                         for item in (left_item, right_item)):
-        evidence = text_evidence(left_item.copy(), right_item.copy())
+        evidence = text_evidence(left_item.copy(), right_item.copy(), native_pair=lambda: (native_left, native_right))
     numeric = bool(evidence.get('numeric_conflict'))
     left_boxes = _normalized_regions(regions, changed.shape)
     right_boxes = _normalized_regions(regions, changed.shape, offset)

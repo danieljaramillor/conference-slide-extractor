@@ -10,7 +10,7 @@ import zipfile
 import cv2
 import numpy as np
 
-from mixed_fixtures import fixtures
+from mixed_fixtures import compact_table_captures, fixtures
 from presenter_fixtures import SLIDE_BOUNDS, presenter_annotation_sequence, presenter_capture_sequence
 from scan_integrity_check import check as check_integrity
 from speaker_fixtures import camera_capture
@@ -21,7 +21,7 @@ def scan_captures(executable, root, stem, cases):
     archive = root / f'{stem}.zip'
     with zipfile.ZipFile(archive, 'w') as zipped:
         for name, image in cases:
-            success, encoded = cv2.imencode('.png', image)
+            success, encoded = cv2.imencode(Path(name).suffix, image)
             assert success
             zipped.writestr(name, encoded.tobytes())
     output = root / f'{stem}-results'
@@ -111,6 +111,22 @@ def check_presenter_annotations(executable, root):
     assert check_integrity(output) == {'captures': len(cases), 'slides': 1, 'text_files': 1}
 
 
+def check_compact_table(executable, root):
+    cases = compact_table_captures()
+    _, output, manifest = scan_captures(executable, root, 'compact-table', cases)
+    groups = manifest['groups']
+    assert [sorted(group['members']) for group in groups] == [[0, 1, 2], [3]], groups
+    assert not manifest['review_pairs'], manifest['review_pairs']
+    splits = manifest['audit']['numeric_splits']
+    assert [split['a'] for split in splits] == [3], splits
+    assert any('42.8' in first and '47.8' in second for first, second in splits[0]['numeric_changes']), splits
+
+    for index, expected in enumerate(('47.8', '42.8'), 1):
+        text = (output / 'selected/text' / f'{index:04d}.txt').read_text(encoding='utf-8')
+        assert 'Outcomes by treatment group' in text and expected in text, text
+    assert check_integrity(output) == {'captures': len(cases), 'slides': 2, 'text_files': 2}
+
+
 def check(executable, browser=False):
     with tempfile.TemporaryDirectory(prefix='slide-exe-check-') as directory:
         root = Path(directory)
@@ -129,6 +145,7 @@ def check(executable, browser=False):
         one_sided_output = check_one_sided(executable, root)
         check_presenter_crops(executable, root)
         check_presenter_annotations(executable, root)
+        check_compact_table(executable, root)
         if browser:
             from browser_batch_check import check as check_browser
             from browser_exclusion_check import check as check_exclusions, check_retained_blend, check_transition_review

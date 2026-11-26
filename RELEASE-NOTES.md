@@ -1,8 +1,7 @@
-# Conference Slide Extractor 2.10.0
+# Conference Slide Extractor 2.10.1
 
-- Automatically crops separate presenter panes and surrounding broadcast graphics from verified slide layouts.
-- Compares and reads the native slide crop before choosing the most complete version of a build.
-- Keeps late chart outlines when they add annotation to the same slide.
-- Preserves the original screenshot in the export and keeps manual crop adjustment available for complex layouts.
+- Matches the same table cells across screenshots before comparing their numbers.
+- Uses native slide pixels to clear OCR conflicts from unchanged cells and preserves real numeric changes as separate slides.
+- Fixes the repeated ESMO poster table. Rescan an existing source ZIP to apply the fix to its grouping.
 
 Download `ConferenceSlideExtractor-Windows-x64.exe` under **Assets** and double-click it. See the repository README for storage, Windows Server, and command-line use. Use `SHA256SUMS.txt` to verify the download. The Windows executable is unsigned.

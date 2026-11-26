@@ -83,6 +83,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
     start=time.perf_counter()
     def read_native(item):
         return extract(decode(source.read(item['name'])),item)
+    def compare_text(a, b):
+        return text_evidence(a, b, native_pair=lambda: (read_native(a), read_native(b)))
     if log['ocr_enabled']:
         targets={g['representative'] for g in groups}
         suspicious=[d for d in decisions if d['reason']=='build' or
@@ -109,7 +111,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
         # Separate confidently detected number changes that the low-res pass missed.
         for d in suspicious:
             a,b=by_id[d['image']],by_id[d['matched']]
-            evidence=text_evidence(a,b)
+            evidence=compare_text(a,b)
             if evidence['numeric_conflict']:
                 group=next(g for g in groups if a['id'] in g['members'])
                 if b['id'] not in group['members'] or len(group['members'])==1:
@@ -132,7 +134,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 a,b=by_id[ga['representative']],by_id[gb['representative']]
                 if a.get('ocr',{}).get('status')!='ok' or b.get('ocr',{}).get('status')!='ok':
                     continue
-                evidence=text_evidence(a,b)
+                evidence=compare_text(a,b)
                 ca,cb=evidence['text_cover_a'],evidence['text_cover_b']
                 if (min(evidence['text_words_a'],evidence['text_words_b'])<10 or
                     evidence['heading_similarity']<.90 or evidence['numeric_conflict'] or max(ca,cb)<.94):
@@ -167,7 +169,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
         for pair in candidates:
             a,b=[by_id[owners[pair[k]]['representative']] for k in ('a','b')]
             if a.get('ocr',{}).get('status')=='ok' and b.get('ocr',{}).get('status')=='ok':
-                ev=text_evidence(a,b)
+                ev=compare_text(a,b)
                 clearly_different=(ev['heading_similarity']<.65 and max(ev['text_cover_a'],ev['text_cover_b'])<.80)
                 clearly_different=clearly_different or (ev['heading_similarity']<.65
                     and min(len(signature(a)[1]),len(signature(b)[1]))>8
