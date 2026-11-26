@@ -127,11 +127,11 @@ def _read_strip(image, caption, role_hints, axis):
     labeled = []
     roles = set()
     for first, last in bands:
-        if labeled and first - labeled[-1][2] > tick_height * .70:
+        if labeled and first - labeled[-1][1] > tick_height * .70:
             break
         # Keep the recognizer crop inside its own ink band plus a single pixel
         # on either side. Even a small margin can include a neighboring row.
-        label_box = [label_left, first-1, label_right, last+1]
+        label_box = [label_left, max(top, first-1), label_right, min(bottom, last+1)]
         text, _ = _read_patch(image, gray, label_box, limit=.87)
         role = _role(text)
         if role is None:
@@ -141,7 +141,7 @@ def _read_strip(image, caption, role_hints, axis):
         if role in roles or (not labeled and role != 'At risk'):
             return None
         roles.add(role)
-        labeled.append((role, first, last, label_box))
+        labeled.append((role, last, label_box))
         if len(labeled) == 3:
             break
     if len(labeled) < 2:
@@ -150,11 +150,11 @@ def _read_strip(image, caption, role_hints, axis):
     rows = [[caption[0], *header]]
     coords = [[[round(v) for v in caption[1:5]], *header_bounds]]
     sources, review = [], []
-    for row_number, (role, first, last, label_box) in enumerate(labeled, 2):
+    for row_number, (role, _, label_box) in enumerate(labeled, 2):
         row = [role]
         row_boxes = [label_box]
         for column, (left, right) in enumerate(columns, 2):
-            crop = [left, first-1, right, last+1]
+            crop = [left, label_box[1], right, label_box[3]]
             text, confidence = _read_patch(image, gray, crop)
             cell = {'row': row_number, 'column': column, 'bounds': crop}
             if _INTEGER.fullmatch(text):
@@ -169,7 +169,7 @@ def _read_strip(image, caption, role_hints, axis):
 
     if any(sum(v is not None for v in row[1:]) < len(columns)*.70 for row in rows[1:]):
         return None
-    return {'bounds': [label_left, min(b[1] for b in header_bounds), columns[-1][1], labeled[-1][2]+1],
+    return {'bounds': [label_left, min(b[1] for b in header_bounds), columns[-1][1], coords[-1][0][3]],
             'method': 'risk_count_strip', 'status': 'partial' if review else 'reconstructed',
             'rows': rows, 'cell_bounds': coords, 'cell_sources': sources, 'review_cells': review}
 
