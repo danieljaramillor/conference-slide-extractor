@@ -47,9 +47,11 @@ def speaker_status(detector, slide, item):
     if is_protected_slide(item):
         return None
     height, width = slide.shape[:2]
-    scale = min(1., 640 / max(height, width))
+    # Normalize small camera crops for face inference only. Keep the native export pixels.
+    scale = min(4., 640 / max(height, width))
     width, height = max(2, round(width * scale)), max(2, round(height * scale))
-    image = cv2.resize(slide, (width, height), interpolation=cv2.INTER_AREA)
+    interpolation = cv2.INTER_LINEAR if scale > 1 else cv2.INTER_AREA
+    image = cv2.resize(slide, (width, height), interpolation=interpolation)
     detector.setInputSize((width, height))
     _, faces = detector.detect(image)
     if faces is None:

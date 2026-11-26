@@ -72,6 +72,11 @@ class SpeakerDetectionTests(unittest.TestCase):
     def test_dark_background_without_person_is_kept(self):
         self.assertIsNone(speaker_status(self.detector, self.image(portrait=False), self.item()))
 
+    def test_small_camera_crop_remains_detectable(self):
+        clipped = cv2.resize(self.image(), (160, 90), interpolation=cv2.INTER_AREA)
+        item = {**self.item(), 'slide_width': 160, 'slide_height': 90}
+        self.assertEqual(speaker_status(self.detector, clipped, item), 'speaker-only')
+
     def test_model_loads_from_unicode_path(self):
         with tempfile.TemporaryDirectory(prefix='extraction-ñ-') as directory:
             model = Path(directory) / 'detector-ñ.onnx'
