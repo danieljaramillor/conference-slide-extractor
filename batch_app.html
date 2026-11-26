@@ -91,6 +91,7 @@
           details.textContent = `${stats.processed}/${stats.input_images} captures processed · ${stats.selected} selected · ${stats.needs_review} to check`;
           if (batch.speaker_excluded) details.textContent += ` · ${batch.speaker_excluded} speaker-only excluded`;
           if (batch.transitions_excluded) details.textContent += ` · ${batch.transitions_excluded} blended transitions excluded`;
+          if (batch.possible_blends) details.textContent += ` · ${batch.possible_blends} possible blend${batch.possible_blends === 1 ? '' : 's'} to check`;
           if (batch.speaker_check === 'partial' || batch.speaker_check === 'unavailable') {
             details.textContent += ' · Speaker check incomplete';
           }

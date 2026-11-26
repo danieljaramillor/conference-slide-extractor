@@ -204,8 +204,67 @@ def check_transition_review(directory, *, browser_channel='chrome'):
     print('Transition review passed: label, intentional restore, merge safeguards, and excluded split.')
 
 
+def check_retained_blend(directory, *, browser_channel='chrome'):
+    with tempfile.TemporaryDirectory(prefix='review-retained-blend-', ignore_cleanup_errors=True) as temporary:
+        root = Path(temporary)
+        source = Path(directory)
+        shutil.copy2(source / 'manifest.json', root / 'manifest.json')
+        shutil.copytree(source / 'thumbs', root / 'thumbs')
+        manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+        images = {image['id']: image for image in manifest['images']}
+        blend = next(image for image in images.values() if image.get('transition_review'))
+        following = images[blend['transition_review']['after']]
+        group = next(group for group in manifest['groups'] if group['representative'] == blend['id'])
+        server = build_server(root)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(channel=browser_channel, headless=True)
+                page = browser.new_page(accept_downloads=True)
+                errors = []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.add_init_script('window.showSaveFilePicker = undefined;')
+                page.goto(f'http://127.0.0.1:{server.server_port}/')
+                expect(page.locator('#pair-count')).to_have_text('Complete')
+                expect(page.locator('#issue-content')).to_be_visible()
+                picker = page.locator('#issue-picker')
+                label = next(text for text in picker.locator('option').all_text_contents()
+                             if text.endswith(f'Group {group["id"]}'))
+                picker.select_option(label=label)
+                expect(page.locator('#issue-reasons')).to_contain_text('part of the previous slide')
+                reference = page.get_by_role('button', name='View following slide')
+                reference.click()
+                expect(page.locator('#lightbox')).to_be_visible()
+                expect(page.locator('#caption')).to_contain_text(following['name'])
+                page.keyboard.press('Escape')
+                while page.locator('#issue-check').is_visible():
+                    page.locator('#issue-check').click()
+                page.get_by_role('button', name='Continue to deck review').click()
+                expect(page.locator(f'#group-{group["id"]}')).to_be_visible()
+                page.get_by_role('button', name='Continue to export').click()
+                page.locator('#export').click()
+                with page.expect_download() as downloaded:
+                    page.get_by_role('link', name='Download export ZIP').click()
+                with zipfile.ZipFile(downloaded.value.path()) as archive:
+                    rows = list(csv.DictReader(io.StringIO(archive.read('mapping.csv').decode('utf-8-sig'))))
+                    selected = {row['selected_source'] for row in rows}
+                    assert blend['name'] in selected and following['name'] in selected
+                    assert 'Participating centers received support for data collection' in archive.read('text/0002.txt').decode()
+                assert not errors, errors
+                browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            server.slide_source.close()
+            thread.join()
+    print('Retained blend review passed: dedicated issue, following-slide preview, and original disclosure kept in the ZIP.')
+
+
 if __name__ == '__main__':
     if '--transitions' in sys.argv:
         check_transition_review(sys.argv[1])
+    elif '--retained-blend' in sys.argv:
+        check_retained_blend(sys.argv[1])
     else:
         check(sys.argv[1])

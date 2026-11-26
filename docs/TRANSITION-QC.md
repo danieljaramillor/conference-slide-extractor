@@ -17,7 +17,15 @@ The independent audit compared the new scan with Windows v2.6.0 on the same 1,45
 | Established complete builds | All 17 representatives retained with byte-identical native PNG and OCR text files |
 | Earlier speaker-only exclusions | All eight retained as exclusions |
 
-The complete result-panel and QR captures stayed selected for their respective builds. All 135 retained PNG and OCR files matched the baseline byte for byte. The team also verified that real stage projections and distinct chart values stayed eligible. One visible disclosure blend was retained for pair review because its clean outgoing slide was absent from the screenshots. Omitting the blended frame could remove the only record of that slide.
+The complete result-panel and QR captures stayed selected for their respective builds. All 135 retained PNG and OCR files matched the baseline byte for byte. The team also verified that real stage projections and distinct chart values stayed eligible. In v2.7, one visible disclosure blend remained in pair review because its clean outgoing slide was absent from the screenshots.
+
+## When a clean preceding capture is missing
+
+Windows v2.8 checks whether a stable following slide is visible at reduced opacity in the blended frame alongside a second layer of content. It keeps a probable blend out of slide-build matching and directs it to **Slide issues** with **View following slide**. The app omits the blend automatically if other stable captures in the same sequence account for both layers and the blend agrees at native color resolution.
+
+On the same 1,450-capture pilot, v2.8 identified the remaining disclosure blend and kept it in a separate review group. The archive contains no clean copy of that disclosure. The original frame and its OCR kept the unique disclosure, and the complete version of the following chart stayed selected. The 135 native PNG files and their OCR text and JSON files were byte-identical to v2.7. All 17 established complete-build representatives remained selected.
+
+Independent checks detected the disclosure blend in five variations of the cropped image, including JPEG compression and reduced resolution, with no detections across 90 transformed slide controls. The regression tests also cover a clean outgoing copy later in the sequence, an incomplete copy, a small colored detail, a missing native image, and a deliberately held translucent slide.
 
 ## Re-run the checks
 

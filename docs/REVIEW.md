@@ -27,6 +27,8 @@ Choose **Review excluded captures** to inspect blended transitions, likely speak
 
 The transition check uses nearby captures to distinguish a short overlap between two slides from a legitimate build. Keep capture order in the filenames. The detector accepts timestamps such as `image_00-10-24.png` and consecutive names such as `frame_102.png`.
 
+If the preceding screenshot is missing, the app looks for a stable following slide and evidence that part of the earlier slide is still visible. When the earlier content is unique or the evidence is uncertain, **Slide issues** keeps the blended frame and offers **View following slide** for comparison. **Mark checked and next** keeps the source capture and its OCR. **Exclude slide** omits it when you decide the overlapping content can be left out.
+
 ## Choose where the ZIP goes
 
 In desktop Chrome or Edge, click **Export ZIP…** to open the browser’s Save As dialog. Choose a folder and filename. The app prepares the export and writes it to that file. Canceling Save As cancels the export. Some embedded browsers only show **Export slides**. In that case use the **Download export ZIP** link and enable the browser’s “Ask where to save each file before downloading” option if you need to choose a folder.

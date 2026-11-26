@@ -14,7 +14,7 @@ import numpy as np
 
 from mixed_fixtures import embed, make_slide
 import slide_dedupe
-from transition_fixtures import build_transition_sequence, slide_build_stages, timestamped
+from transition_fixtures import build_transition_sequence, one_sided_sequence, slide_build_stages, timestamped
 
 
 class TransitionBuildTests(unittest.TestCase):
@@ -76,6 +76,65 @@ class TransitionBuildTests(unittest.TestCase):
         excluded = [group['representative'] for group in manifest['groups'] if group.get('excluded')]
         self.assertCountEqual(excluded, [3, 4, 5, 6])
 
+    def test_missing_outgoing_capture_flags_the_blend_and_preserves_its_disclosure(self):
+        captures, _ = one_sided_sequence()
+        manifest, output = self.scan(captures, ocr='on')
+        self.assert_exported_frames(manifest, output, captures, [0, 2, 3])
+        flagged = manifest['images'][2]['transition_review']
+        self.assertEqual((flagged['kind'], flagged['after']), ('possible-one-sided-blend', 3))
+        group = next(group for group in manifest['groups'] if 2 in group['members'])
+        self.assertTrue(group['needs_review'])
+        self.assertTrue(any('blend' in reason and 'unique content' in reason for reason in group['review_reasons']))
+        disclosure = (output / 'selected' / 'text' / '0002.txt').read_text(encoding='utf-8')
+        incoming = (output / 'selected' / 'text' / '0003.txt').read_text(encoding='utf-8')
+        self.assertIn('Participating centers received support for data collection', disclosure)
+        self.assertNotIn('Participating centers', incoming)
+
+    def test_clean_equivalent_elsewhere_permits_omission_but_missing_content_does_not(self):
+        captures, outgoing = one_sided_sequence()
+        sequence = [image for _, image in captures]
+        incomplete = outgoing.copy()
+        incomplete[102:126] = 248
+
+        for name, alternative, expected_ids in (
+                ('complete', outgoing, [0, 3, 6]), ('missing disclosure', incomplete, [0, 2, 3, 6])):
+            with self.subTest(name=name):
+                frames = timestamped((*sequence, sequence[0], alternative, alternative))
+                manifest, output = self.scan(frames)
+                self.assert_exported_frames(manifest, output, frames, expected_ids)
+                ghost = manifest['images'][2]
+                if name == 'complete':
+                    self.assertEqual(ghost['transition']['kind'], 'one-sided-crossfade')
+                    self.assertIn(ghost['transition']['before'], (6, 7))
+                    self.assertEqual(ghost['transition']['after'], 3)
+                    group = next(group for group in manifest['groups'] if 2 in group['members'])
+                    self.assertTrue(group['excluded'])
+                    self.assertEqual(group['auto_exclusion'], 'transition')
+                else:
+                    self.assertNotIn('transition', ghost)
+                    self.assertEqual(ghost['transition_review']['after'], 3)
+
+    def test_held_translucent_slide_does_not_become_a_transition_warning(self):
+        captures, _ = one_sided_sequence()
+        slate, _, layered, incoming, _ = [image for _, image in captures]
+        frames = timestamped((slate, slate, layered, layered, incoming, incoming))
+        manifest, output = self.scan(frames)
+        self.assert_exported_frames(manifest, output, frames, [0, 2, 4])
+        self.assertFalse(any(image.get('transition_review') for image in manifest['images']))
+        self.assertFalse(any(group.get('auto_exclusion') for group in manifest['groups']))
+
+    def test_missing_small_native_annotation_blocks_automatic_omission(self):
+        captures, outgoing = one_sided_sequence()
+        slate, _, _, incoming, _ = [image for _, image in captures]
+        annotated = outgoing.copy()
+        # A color-only marker has nearly the same grayscale value as the background.
+        annotated[399:403, 850:854] = (196, 255, 255)
+        blend = cv2.addWeighted(annotated, .29, incoming, .71, 0)
+        frames = timestamped((slate, slate, blend, incoming, incoming, slate, outgoing, outgoing))
+        manifest, output = self.scan(frames)
+        self.assert_exported_frames(manifest, output, frames, [0, 2, 3, 6])
+        self.assertEqual(manifest['images'][2]['transition_review']['after'], 3)
+
     def test_consecutive_solid_reveals_are_preserved_by_the_selected_build_policy(self):
         base, panel, complete = slide_build_stages()
         final = complete.copy()
@@ -117,10 +176,11 @@ class TransitionBuildTests(unittest.TestCase):
         cv2.putText(complete, 'Observed benefits for both cohorts', (1120, 680),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.15, (240, 240, 230), 3, cv2.LINE_AA)
         faint = cv2.addWeighted(base, .6, complete, .4, 0)
-        captures = timestamped((base, faint, complete))
+        captures = timestamped((base, faint, complete, complete))
         manifest, output = self.scan(captures, ocr='on')
         self.assertEqual(len(manifest['groups']), 1)
         self.assert_exported_frames(manifest, output, captures, [2])
+        self.assertFalse(any(image.get('transition_review') for image in manifest['images']))
         text = (output / 'selected' / 'text' / '0001.txt').read_text(encoding='utf-8')
         self.assertIn('Long term analysis now added', text)
         self.assertIn('Observed benefits for both cohorts', text)

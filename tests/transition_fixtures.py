@@ -40,3 +40,28 @@ def build_transition_sequence():
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, (240, 244, 255), 3)
     blend = cv2.addWeighted(complete, .54, next_slide, .46, 0)
     return timestamped((base, panel, complete, blend, next_slide, next_slide))
+
+
+def one_sided_sequence():
+    """The outgoing disclosure is visible only as faint text in the blend."""
+    _, _, incoming = slide_build_stages()
+    outgoing = np.full_like(incoming, 248)
+    ink = (95, 40, 20)
+    cv2.putText(outgoing, 'Required disclosures', (50, 75),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.27, ink, 2, cv2.LINE_AA)
+    disclosures = (
+        'Participating centers received support for data collection',
+        'Support came from the Independent Methods Consortium',
+        'Median follow-up was 31.7 months across both cohorts',
+        'Full eligibility criteria are listed in the appendix',
+    )
+    for index, line in enumerate(disclosures):
+        cv2.putText(outgoing, line, (58, 122 + index * 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, .72, ink, 2, cv2.LINE_AA)
+    blend = cv2.addWeighted(outgoing, .29, incoming, .71, 0)
+    unrelated = np.full_like(incoming, (45, 34, 28))
+    cv2.putText(unrelated, 'Session overview', (135, 245),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.8, (220, 220, 220), 3, cv2.LINE_AA)
+    cv2.putText(unrelated, 'Welcome and agenda', (136, 320),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (190, 195, 205), 2, cv2.LINE_AA)
+    return timestamped((unrelated, unrelated, blend, incoming, incoming)), outgoing

@@ -11,6 +11,7 @@ const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 const needs=g=>!g.excluded&&g.needs_review&&!g.acknowledged;
 const speakerExclusion='probable speaker-only frame (auto-excluded)';
 const transitionExclusion='blended slide transition (auto-excluded)';
+const possibleBlend='possible blend with unique content';
 const automaticExclusions={
  'speaker-only':{reason:speakerExclusion,label:'Likely speaker-only'},
  transition:{reason:transitionExclusion,label:'Blended transition'}
@@ -75,11 +76,12 @@ function selectRepresentative(group,id){
   setExclusionType(group,null);
   group.review_reasons=(group.review_reasons||[]).filter(reason=>reason!==transitionExclusion);
  }
+ group.review_reasons=(group.review_reasons||[]).filter(reason=>reason!==possibleBlend);
  group.representative=id;
  if(isTransition(id)){
   setExclusionType(group,'transition');
   flagForReview(group,transitionExclusion);
- }else flagForReview(group,'check replacement capture');
+ }else flagForReview(group,images.get(id)?.transition_review?possibleBlend:'check replacement capture');
 }
 function changeView(view){
  activeView=view;
@@ -160,6 +162,7 @@ function restore(d){
 const issueDescriptions={
  [speakerExclusion]:'The scan flagged this as likely speaker footage. Confirm slide content is visible before marking it checked.',
  [transitionExclusion]:'The scan detected an overlap between two slides. Restore this capture only if it shows the slide you want to keep.',
+ [possibleBlend]:'This frame appears to contain part of the previous slide. Keep it if that content matters. View the following slide to compare.',
  'check whether slide content is visible':'Confirm this frame contains a slide. Exclude it if it shows only people or the venue.',
  'check replacement capture':'Verify that the selected capture shows the whole slide with readable text and charts.',
  'possible slide transition':'Check for an overlap between slides. Choose a capture from before or after the transition.',
@@ -209,6 +212,11 @@ function renderIssues(issues){
  const height=crop?Math.round(crop[3]*image.height)-Math.round(crop[1]*image.height):image.slide_height;
  $('issue-size').textContent=`${width||'?'} × ${height||'?'} px · Select the image to enlarge`;
  $('issue-reasons').innerHTML=slideIssues(group).map(reason=>`<li>${esc(issueDescriptions[reason]||reason)}</li>`).join('');
+ const following=$('issue-following');
+ const after=image.transition_review?.after;
+ following.hidden=!images.has(after);
+ if(following.hidden)delete following.dataset.zoom;
+ else following.dataset.zoom=after;
  $('issue-picker').innerHTML=issues.map((item,index)=>`<option value="${index}">${index+1}. Group ${item.id}</option>`).join('');
  $('issue-picker').value=issueIndex;
  $('previous-issue').disabled=issueIndex===0;
@@ -429,12 +437,13 @@ document.addEventListener('click',e=>{
   group.excluded=false;
   selected.delete(group.id);
   const exclusion=automaticExclusions[exclusionType(group)];
-  if(exclusion)flagForReview(group,exclusion.reason);
+  const reason=exclusion?.reason||(images.get(group.representative).transition_review?possibleBlend:null);
+  if(reason)flagForReview(group,reason);
   lastPairDecision=null;
   lastIssueDecision=null;
   persist();render();
   ($('grid').querySelector('[data-restore]')||$('show-excluded')).focus();
-  notify(exclusion?'Capture restored. Check it in Slide issues before exporting.':'Capture restored to the deck.');
+  notify(reason?'Capture restored. Check it in Slide issues before exporting.':'Capture restored to the deck.');
  }
  if(d.split){
   const id=+d.split,group=owner(id);
@@ -444,7 +453,7 @@ document.addEventListener('click',e=>{
   if(transition){
    child.auto_exclusion='transition';
    child.review_reasons.push(transitionExclusion);
-  }
+  }else if(images.get(id).transition_review)child.review_reasons.push(possibleBlend);
   group.members=group.members.filter(member=>member!==id);
   if(group.representative===id)selectRepresentative(group,group.members[0]);
   groups.push(child);
@@ -467,7 +476,7 @@ $('merge').onclick=()=>{
  const chosen=groups.filter(g=>selected.has(g.id));if(chosen.length<2)return notify('Select at least two groups.');const target=chosen[0];
  const included=chosen.filter(group=>!group.excluded);
  const candidates=included.length?included:chosen;
- const clean=candidates.filter(group=>exclusionType(group)!=='transition');
+ const clean=candidates.filter(group=>exclusionType(group)!=='transition'&&!images.get(group.representative).transition_review);
  const rank=image=>[image.ocr?.characters||image.detail||0,image.slide_pixels||0];
  const best=(clean.length?clean:candidates).map(group=>({group,score:rank(images.get(group.representative))}))
   .sort((a,b)=>b.score[0]-a.score[0]||b.score[1]-a.score[1])[0].group;
@@ -478,6 +487,7 @@ $('merge').onclick=()=>{
  target.excluded=!included.length;
  target.review_reasons=[];
  if(type==='transition')flagForReview(target,transitionExclusion);
+ if(images.get(target.representative).transition_review)flagForReview(target,possibleBlend);
  flagForReview(target,'confirm most complete capture');
  groups=groups.filter(g=>!selected.has(g.id)||g.id===target.id);
  selected.clear();
@@ -575,6 +585,7 @@ $('applycrop').onclick=()=>{
  group.review_reasons=[];
  flagForReview(group,'check adjusted crop');
  if(type==='transition')flagForReview(group,transitionExclusion);
+ if(images.get(group.representative).transition_review)flagForReview(group,possibleBlend);
  issueIndex=groups.filter(hasIssue).indexOf(group);
  lastIssueDecision=null;
  lastPairDecision=null;

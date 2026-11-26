@@ -331,6 +331,7 @@ summary, label:has(input[type=checkbox], input[type=radio]) { cursor: pointer; }
 .issue-inspector h3 { font-size: 17px; }
 .issue-inspector ul { padding-left: 17px; margin: 10px 0 15px; color: var(--muted); font-size: 14px; line-height: 1.45; }
 .issue-inspector li + li { margin-top: 6px; }
+#issue-following { margin-bottom: 12px; }
 .issue-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .issue-actions .primary { width: 100%; }
 .issue-actions .quiet { color: var(--error); }

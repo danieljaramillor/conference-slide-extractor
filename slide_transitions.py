@@ -11,6 +11,7 @@ import numpy as np
 
 
 EXCLUSION_REASON = 'blended slide transition (auto-excluded)'
+ONE_SIDED_REVIEW_REASON = 'possible blend with unique content'
 _TIMESTAMP = re.compile(r'image_(\d\d)-(\d\d)-(\d\d)', re.IGNORECASE)
 _SEQUENCE = re.compile(r'((?:(?:capture|frame|image|screenshot)[_ -]?)?)(\d+)', re.IGNORECASE)
 _PERSPECTIVE = {'auto-perspective', 'projected-screen'}
@@ -205,3 +206,140 @@ def mark_crossfades(items):
             if evidence['before'] in inferred or evidence['after'] in inferred:
                 del item['transition']
     return [item for item in items if item.get('transition')]
+
+
+def _stable_captures(left, right):
+    if any(item.get('crossfade') or item.get('crop_mode') in _PERSPECTIVE for item in (left, right)):
+        return False
+    if not _same_crop(left, right):
+        return False
+    a, b = left['gray'], right['gray']
+    delta = cv2.absdiff(a, b)
+    return delta.mean() <= 1.6 and np.mean(delta > 12) <= .008
+
+
+def _one_sided_fit(middle, after):
+    """Find attenuated incoming content with a second, independent layer of detail."""
+    stable = after.astype(np.int16)
+    mixed = middle.astype(np.int16)
+    background = int(np.median(stable))
+    if 65 < background < 190 or abs(int(np.median(mixed)) - background) > 5:
+        return None
+    polarity = 1 if background >= 190 else -1
+    stable = polarity * (background - stable)
+    mixed = polarity * (background - mixed)
+    if np.mean(np.abs(stable) <= 8) < .65:
+        return None
+
+    prominent = stable >= 55
+    if prominent.sum() < .003 * stable.size:
+        return None
+    ratios = mixed[prominent] / stable[prominent]
+    weight = float(np.quantile(ratios, .35))
+    agreement = float(np.mean(np.abs(ratios - weight) <= .11))
+    if not .50 <= weight <= .88 or agreement < .68:
+        return None
+
+    # Ignore ringing and slight alignment errors near the fully visible layer.
+    occupied = cv2.dilate((np.abs(stable) > 8).astype(np.uint8), np.ones((5, 5), dtype=np.uint8))
+    ghost = (occupied == 0) & (mixed - stable >= max(12, (1 - weight) * 42))
+    rows, columns = ghost.shape
+    body = ghost[rows // 8: 7 * rows // 8, columns // 25: 24 * columns // 25]
+    ghost_fraction = float(body.mean())
+    if not .003 <= ghost_fraction <= .16:
+        return None
+    _, _, components, _ = cv2.connectedComponentsWithStats(body.astype(np.uint8), connectivity=8)
+    # Multiple small strokes in the body distinguish ghosted content from a
+    # flat tint, compression noise, or a simple border during a video cut.
+    useful = components[1:, cv2.CC_STAT_AREA]
+    if np.count_nonzero((useful >= 3) & (useful <= .005 * body.size)) < 12:
+        return None
+    return weight, agreement, ghost_fraction
+
+
+def _complete_blend_proof(before, middle, after):
+    """Screen remote clean sources using the normalized comparison images."""
+    fit = _blend(before, middle, after)
+    if not fit or fit.residual > .008 or fit.agreement < .96 or not _distinct(before, after):
+        return None
+    predicted = cv2.addWeighted(before, 1 - fit.weight, after, fit.weight, 0)
+    unexplained = cv2.absdiff(predicted, middle) > 10
+    if unexplained.mean() > .002:
+        return None
+    _, _, components, _ = cv2.connectedComponentsWithStats(unexplained.astype(np.uint8), connectivity=8)
+    if np.any(components[1:, cv2.CC_STAT_AREA] >= 6):
+        return None
+    return fit
+
+
+def _native_blend_proof(read_capture, before, middle, after, weight):
+    """Require close agreement in native color, including small coherent details."""
+    try:
+        a, b, c = (read_capture(item) for item in (before, middle, after))
+    except Exception:
+        # Absence of readable native evidence can only leave a review warning.
+        return False
+    if (not all(isinstance(image, np.ndarray) and image.dtype == np.uint8
+                and image.ndim == 3 and image.shape[2] == 3 and image.size for image in (a, b, c))
+            or not a.shape == b.shape == c.shape):
+        return False
+    predicted = cv2.addWeighted(a, 1 - weight, c, weight, 0)
+    error = cv2.absdiff(predicted, b).max(axis=2)
+    unexplained = error > 5
+    if unexplained.mean() > .001 or error.mean() > 1.4:
+        return False
+    _, _, components, _ = cv2.connectedComponentsWithStats(unexplained.astype(np.uint8), connectivity=8)
+    return not np.any(components[1:, cv2.CC_STAT_AREA] >= 8)
+
+
+def mark_one_sided_transitions(items, read_capture=None):
+    """Flag plausible overlaps with stable incoming evidence; only omit with a second clean source."""
+    clocks = [_clock(item) for item in items]
+    for item in items:
+        item.pop('transition_review', None)
+
+    candidates, holds = [], []
+    for index in range(len(items) - 1):
+        current, following = items[index:index + 2]
+        if not _adjacent(current, following, clocks[index], clocks[index + 1]):
+            continue
+        if _stable_captures(current, following):
+            holds.append(index)
+            continue
+        if index + 2 == len(items) or current.get('crossfade') or not _same_crop(current, following):
+            continue
+        if (index and _adjacent(items[index - 1], current, clocks[index - 1], clocks[index])
+                and _stable_captures(items[index - 1], current)):
+            continue  # A held transparent slide can be an intentional design.
+        repeated = items[index + 2]
+        if (not _adjacent(following, repeated, clocks[index + 1], clocks[index + 2])
+                or not _stable_captures(following, repeated)):
+            continue
+        contrast = cv2.norm(current['gray'], following['gray'], cv2.NORM_L1) / current['gray'].size
+        if not 1.8 <= contrast <= 24:
+            continue
+        if evidence := _one_sided_fit(current['gray'], following['gray']):
+            weight, agreement, ghost_fraction = evidence
+            current['transition_review'] = {
+                'kind': 'possible-one-sided-blend', 'after': following.get('id', index + 1),
+                'support': repeated.get('id', index + 2), 'weight': round(weight, 4),
+                'agreement': round(agreement, 4), 'ghost_fraction': round(ghost_fraction, 4),
+            }
+            candidates.append(index)
+
+    if read_capture is None:
+        return
+    for index in candidates:
+        current, following = items[index:index + 2]
+        for anchor in holds:
+            if abs(anchor - index) < 3 or clocks[anchor][0] != clocks[index][0]:
+                continue
+            before = items[anchor]
+            if (before.get('transition_review') or items[anchor + 1].get('transition_review')
+                    or not _same_crop(before, current)):
+                continue
+            if fit := _complete_blend_proof(before['gray'], current['gray'], following['gray']):
+                if _native_blend_proof(read_capture, before, current, following, fit.weight):
+                    _record(items, anchor, index, index + 1, 'one-sided-crossfade', fit)
+                    del current['transition_review']
+                    break

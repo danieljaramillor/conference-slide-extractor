@@ -19,10 +19,10 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from slide_regions import detect_region, extract, quality, recover_projected_screen
-from slide_transitions import EXCLUSION_REASON, mark_crossfades
+from slide_transitions import EXCLUSION_REASON, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.7.0'
+APP_VERSION = '2.8.0'
 cv2.setNumThreads(1)
 
 
@@ -194,27 +194,34 @@ def run(args):
     read_seconds = time.perf_counter() - start
     if not items:
         raise ValueError(f'No readable images. Errors: {errors[:3]}')
-    transitions = mark_crossfades(items)
+    mark_crossfades(items)
+    mark_one_sided_transitions(items, read_capture=lambda item: extract(decode(source.read(item['name'])), item))
+    transitions = [item for item in items if item.get('transition')]
     transition_ids = {item['id'] for item in transitions}
     eligible = [item for item in items if item['id'] not in transition_ids]
-    groups, decisions, candidates = [], [], []
+    groups, matchable, decisions, candidates = [], [], [], []
     by_id = {i['id']: i for i in eligible}
     for pos, item in enumerate(eligible):
         item['position'] = pos
     descriptors = np.stack([i['descriptor'] for i in eligible])
     # Global lookup handles repeated slides even when filenames are not chronological.
     for pos, item in enumerate(eligible):
-        if not groups:
-            groups.append({'id': 1, 'representative': item['id'], 'members': [item['id']], 'builds': 0})
+        # This blend can be the only capture of the outgoing content.
+        protected = bool(item.get('transition_review'))
+        if protected or not matchable:
+            group = {'id': len(groups)+1, 'representative': item['id'], 'members': [item['id']], 'builds': 0}
+            groups.append(group)
+            if not protected:
+                matchable.append(group)
             continue
-        rep_ids = [g['representative'] for g in groups]
+        rep_ids = [g['representative'] for g in matchable]
         rep_pos = [by_id[i]['position'] for i in rep_ids]
         distances = np.abs(descriptors[rep_pos] - item['descriptor']).mean(axis=1)
         best = None
-        for gi in np.argsort(distances)[:min(8, len(groups))]:
+        for gi in np.argsort(distances)[:min(8, len(matchable))]:
             if distances[gi] > .16:
                 continue
-            group = groups[int(gi)]
+            group = matchable[int(gi)]
             ref = by_id[group['representative']]
             metrics = compare(item, ref)
             match = metrics['duplicate'] or (args.builds == 'complete' and metrics['build'])
@@ -237,7 +244,9 @@ def run(args):
             decisions.append({'image': item['id'], 'matched': ref['id'], 'group': group['id'],
                               'reason': 'build' if is_build else 'duplicate', **metrics})
         else:
-            groups.append({'id': len(groups)+1, 'representative': item['id'], 'members': [item['id']], 'builds': 0})
+            group = {'id': len(groups)+1, 'representative': item['id'], 'members': [item['id']], 'builds': 0}
+            groups.append(group)
+            matchable.append(group)
     from slide_audit import audit
     groups, candidates, audit_log = audit(source,eligible,groups,decisions,candidates,args,out)
     # Keep evidence and each original frame inspectable. Blends did not enter
@@ -250,7 +259,13 @@ def run(args):
                        'needs_review': False, 'review_reasons': [EXCLUSION_REASON]})
         transition_exclusions.append({'group': group_id, 'representative': item['id'],
                                       **item['transition']})
-    audit_log['transition_detection'] = {'auto_excluded': transition_exclusions}
+    transition_reviews = [
+        {'group': group['id'], 'representative': group['representative'],
+         **by_id[group['representative']]['transition_review']}
+        for group in groups
+        if group['representative'] in by_id and by_id[group['representative']].get('transition_review')
+    ]
+    audit_log['transition_detection'] = {'auto_excluded': transition_exclusions, 'needs_review': transition_reviews}
     # Reconcile suspicious pairs to final groups and retain the closest example per pair.
     owner = {m: g['id'] for g in groups for m in g['members']}
     unique_pairs = {}

@@ -10,7 +10,7 @@ import cv2
 from slide_regions import extract
 from slide_ocr import read_text, text_evidence, signature
 from slide_speakers import CHECK_SPEAKER, ENGINE, SPEAKER_ONLY, create_detector, is_protected_slide, speaker_status
-
+from slide_transitions import ONE_SIDED_REVIEW_REASON
 
 def audit_speaker_frames(source, groups, by_id, args, decode, ocr_enabled):
     """Keep clear camera shots out of exports while retaining every original capture."""
@@ -30,6 +30,8 @@ def audit_speaker_frames(source, groups, by_id, args, decode, ocr_enabled):
     cache = getattr(args, 'ocr_cache', Path(__file__).with_name('.cache') / 'ocr')
     for group in groups:
         original = by_id[group['representative']]
+        if original.get('transition_review'):
+            continue
         if is_protected_slide(original):
             continue
         report['checked_groups'] += 1
@@ -120,10 +122,10 @@ def audit(source,items,groups,decisions,candidates,args,out):
         # merge charts; numeric conflicts and changed titles block the merge.
         removed=set()
         for ai,ga in enumerate(groups):
-            if ga['id'] in removed:
+            if ga['id'] in removed or by_id[ga['representative']].get('transition_review'):
                 continue
             for gb in groups[ai+1:]:
-                if gb['id'] in removed:
+                if gb['id'] in removed or by_id[gb['representative']].get('transition_review'):
                     continue
                 a,b=by_id[ga['representative']],by_id[gb['representative']]
                 if a.get('ocr',{}).get('status')!='ok' or b.get('ocr',{}).get('status')!='ok':
@@ -182,6 +184,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
     for group in groups:
         item=by_id[group['representative']]
         reasons=[]
+        if item.get('transition_review'):
+            reasons.append(ONE_SIDED_REVIEW_REASON)
         if item.get('crossfade'):
             reasons.append('possible slide transition')
         if item['crop_confidence']<.78 or item.get('region_ambiguous'):
