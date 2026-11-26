@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conference Slide Extractor</title>
+  <style>
+    :root{color-scheme:dark;font:16px system-ui,sans-serif;color:#eaf0f4;background:#101820}
+    *{box-sizing:border-box}body{max-width:960px;margin:0 auto;padding:44px 24px}h1{font-size:clamp(28px,5vw,42px);margin:0 0 10px;letter-spacing:-.035em}h2{font-size:19px;margin:0 0 14px}p{color:#b7c7d3;line-height:1.5;margin:0 0 14px}.panel{margin-top:28px;padding:22px;background:#1a2834;border:1px solid #364b5f;border-radius:12px}.form,.row{display:flex;gap:16px;justify-content:space-between;align-items:center;flex-wrap:wrap}.row{padding:16px 0;border-bottom:1px solid #364b5f}.row:last-child{border-bottom:0}.name{font-weight:650;overflow-wrap:anywhere}.details{font-size:.9rem;margin-top:5px;color:#b7c7d3}button,.action{border:0;border-radius:7px;background:#79ddd2;color:#0b2328;padding:10px 15px;font:inherit;font-weight:650;text-decoration:none;cursor:pointer}button:disabled{opacity:.55;cursor:default}input{max-width:100%;font:inherit}progress{width:100%;margin-top:12px;accent-color:#79ddd2}#status{margin-top:12px;margin-bottom:0}.error{color:#ffc2b4}.pill{color:#a4e5dc;font-size:.86rem;font-weight:650}.form label{display:block;margin-bottom:6px}
+  </style>
+</head>
+<body>
+  <header><h1>Conference Slide Extractor</h1><p>Turn a ZIP of conference screenshots into selected slides and searchable text.</p></header>
+  <section class="panel" aria-labelledby="new-title">
+    <h2 id="new-title">New batch</h2>
+    <form id="submit" class="form">
+      <div><label for="archive">Screenshot ZIP</label><input id="archive" type="file" accept=".zip,application/zip" required></div>
+      <button id="start" type="submit" disabled>Extract slides</button>
+    </form>
+    <progress id="transfer" max="100" hidden aria-label="ZIP transfer progress"></progress>
+    <p id="status" role="status" aria-live="polite" hidden></p>
+  </section>
+  <section class="panel" aria-labelledby="batches-title">
+    <h2 id="batches-title">Batches</h2>
+    <div id="jobs"><p>Loading batches…</p></div>
+  </section>
+  <script>
+    const token = '__UPLOAD_TOKEN__';
+    const archive = document.getElementById('archive');
+    const start = document.getElementById('start');
+    const status = document.getElementById('status');
+    const transfer = document.getElementById('transfer');
+    const jobs = document.getElementById('jobs');
+    let busy = true;
+    let uploading = false;
+    let lastSnapshot;
+
+    function message(text, isError = false) {
+      status.hidden = !text;
+      status.textContent = text;
+      status.classList.toggle('error', isError);
+    }
+
+    function updateButton() {
+      start.disabled = busy || uploading || !archive.files.length;
+    }
+
+    function renderBatches(batches) {
+      jobs.replaceChildren();
+      if (!batches.length) {
+        jobs.append('Submitted batches will appear here.');
+        return;
+      }
+      for (const batch of batches) {
+        const row = document.createElement('article');
+        row.className = 'row';
+        const info = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'name';
+        name.textContent = batch.name;
+        const details = document.createElement('div');
+        details.className = 'details';
+        if (batch.state === 'ready') {
+          const stats = batch.stats;
+          details.textContent = `${stats.processed}/${stats.input_images} captures processed · ${stats.selected} selected · ${stats.needs_review} to check`;
+          if (batch.ocr_errors) details.textContent += ` · ${batch.ocr_errors} OCR errors`;
+          const link = document.createElement('a');
+          link.className = 'action';
+          link.href = `/batches/${batch.id}/`;
+          link.textContent = 'Review slides';
+          row.append(info, link);
+        } else {
+          const state = document.createElement('div');
+          const failed = batch.state === 'failed';
+          state.className = failed ? 'pill error' : 'pill';
+          state.textContent = failed ? 'Failed' : 'In progress';
+          details.textContent = batch.progress;
+          row.append(info, state);
+        }
+        info.append(name, details);
+        jobs.append(row);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch('/jobs');
+        if (!response.ok) throw new Error('Could not read batch status.');
+        const snapshot = await response.json();
+        busy = snapshot.busy;
+        const signature = JSON.stringify(snapshot);
+        if (signature !== lastSnapshot) {
+          renderBatches(snapshot.batches);
+          lastSnapshot = signature;
+        }
+      } catch {
+        busy = true;
+        message('The application is unavailable. Check the window that started it.', true);
+      }
+      updateButton();
+    }
+
+    archive.addEventListener('change', updateButton);
+    document.getElementById('submit').addEventListener('submit', event => {
+      event.preventDefault();
+      const file = archive.files[0];
+      if (!file || busy || uploading) return;
+      uploading = true;
+      updateButton();
+      transfer.value = 0;
+      transfer.hidden = false;
+      message('Sending ZIP to the extraction machine…');
+      const request = new XMLHttpRequest();
+      request.open('POST', '/jobs');
+      request.setRequestHeader('X-Batch-Token', token);
+      request.setRequestHeader('X-Archive-Name', encodeURIComponent(file.name));
+      request.upload.onprogress = event => {
+        if (event.lengthComputable) transfer.value = 100 * event.loaded / event.total;
+      };
+      request.onload = () => {
+        if (request.status === 202) {
+          archive.value = '';
+          message('ZIP received. Follow processing in Batches.');
+        } else {
+          let error = 'The ZIP could not be submitted.';
+          try { error = JSON.parse(request.responseText).error || error; } catch {}
+          message(error, true);
+        }
+      };
+      request.onerror = () => message('Transfer failed. Select the ZIP to retry.', true);
+      request.onloadend = () => {
+        uploading = false;
+        transfer.hidden = true;
+        busy = true;
+        refresh();
+      };
+      request.send(file);
+    });
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>

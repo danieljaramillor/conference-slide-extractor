@@ -1,0 +1,78 @@
+"""End-to-end team package smoke test from ZIP selection through downloaded export."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+from playwright.sync_api import sync_playwright
+
+
+def check(program, python, fixture, screenshot):
+    chrome = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
+    with tempfile.TemporaryDirectory(prefix='extractor-ui-') as directory:
+        frozen = program.suffix.lower() == '.exe'
+        launch = [str(program), '--no-browser'] if frozen else [str(Path(python).resolve()), '-u', str(program)]
+        proc = subprocess.Popen([*launch, '--data', directory, '--workers', '2', '--ocr-workers', '2'],
+                                cwd=directory, stdout=subprocess.PIPE, text=True, encoding='utf-8')
+        try:
+            url = proc.stdout.readline().split()[1]
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(executable_path=chrome, headless=True)
+                page = browser.new_page(viewport={'width': 1320, 'height': 920}, accept_downloads=True)
+                errors, external = [], []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+
+                def allow_loopback(route):
+                    if route.request.url.startswith(url):
+                        route.continue_()
+                    else:
+                        external.append(route.request.url)
+                        route.abort()
+
+                page.route('**/*', allow_loopback)
+                page.goto(url)
+                page.locator('#archive').set_input_files({'name': 'invalid.zip', 'mimeType': 'application/zip',
+                                                         'buffer': b'invalid archive'})
+                page.locator('#start').click()
+                page.get_by_text('The selected file is not a readable ZIP archive.').first.wait_for()
+                page.locator('#archive').set_input_files(fixture)
+                page.locator('#start').click()
+                page.get_by_role('link', name='Review slides').wait_for(timeout=90_000)
+                page.screenshot(path=str(screenshot))
+                page.get_by_role('link', name='Review slides').click()
+                page.locator('#slides-tab').click()
+                page.locator('#filter').select_option('all')
+                page.wait_for_function("document.querySelectorAll('.card').length === 4", timeout=8000)
+                page.locator('[data-zoom]').first.click()
+                page.wait_for_function("document.querySelector('#lightbox img').naturalWidth >= 1280")
+                page.keyboard.press('Escape')
+                page.locator('#export').click()
+                page.get_by_role('link', name='Download export ZIP').wait_for(timeout=30_000)
+                with page.expect_download() as result:
+                    page.get_by_role('link', name='Download export ZIP').click()
+                with zipfile.ZipFile(result.value.path()) as downloaded:
+                    names = downloaded.namelist()
+                    assert len([n for n in names if n.startswith('slides/')]) == 4
+                    assert len([n for n in names if n.endswith('.txt')]) == 4
+                    assert downloaded.testzip() is None
+                page.get_by_role('link', name='Back to batches').click()
+                page.get_by_role('link', name='Review slides').wait_for()
+                assert not errors, errors
+                assert not external, external
+                browser.close()
+            jobs = [json.loads(file.read_text(encoding='utf-8')) for file in Path(directory).glob('*/batch.json')]
+            assert sorted(job['state'] for job in jobs) == ['failed', 'ready']
+        finally:
+            if frozen and proc.poll() is None:
+                # A one-file Windows bundle runs the app in a child bootloader process.
+                subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'], capture_output=True, check=False)
+            else:
+                proc.terminate()
+            proc.wait(timeout=10)
+    print('Package GUI passed: invalid ZIP recovery, real OCR, persisted batch status, native preview, export download, local-only browser requests.')
+
+
+if __name__ == '__main__':
+    check(Path(sys.argv[1]).resolve(), sys.argv[2], str(Path(sys.argv[3]).resolve()), Path(sys.argv[4]).resolve())

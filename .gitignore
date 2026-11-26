@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+output/
+*.zip
+sample-*
+.cache/
+batches/
+build/
+dist/
+*.spec
+*.exe
