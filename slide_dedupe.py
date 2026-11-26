@@ -21,12 +21,13 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from slide_comparison import has_added_chart_outlines, has_local_content_replacement, tint_duplicate
+from slide_pages import confirm_footer_numbers, footer_number
 from slide_regions import broadcast_crop_profile, confirmed_presenter_crops, detect_region, extract, presenter_layout, quality, recover_projected_screen
 from slide_text import SESSION_TEXT, slide_text_record
 from slide_transitions import EXCLUSION_REASON, capture_runs, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.13.0'
+APP_VERSION = '2.14.0'
 cv2.setNumThreads(1)
 
 
@@ -433,7 +434,7 @@ def run(args):
         review_inputs['numeric_reviews'] = audit_log['numeric_reviews']
     manifest['manifest_id'] = hashlib.sha256(json.dumps(review_inputs, sort_keys=True).encode()).hexdigest()
     print('Writing native-resolution slides and text...', flush=True)
-    export(source, manifest, out / 'selected')
+    audit_log['export_text'] = export(source, manifest, out / 'selected')
     elapsed = time.perf_counter() - start
     manifest['stats'] = {'input_images': len(source.names), 'processed': len(items), 'groups': len(groups),
                          'removed': len(items)-len(groups), 'review_pairs': len(unique_pairs),
@@ -457,42 +458,66 @@ def export(source, manifest, dest, overrides=None, crops=None):
     (dest / 'text').mkdir(exist_ok=True)
     images = {i['id']: i for i in manifest['images']}
     groups = [g for g in (overrides if overrides is not None else manifest['groups']) if not g.get('excluded')]
+    settings = manifest.get('settings', {})
+    ocr_enabled = settings.get('ocr') == 'on'
+    cache = settings.get('ocr_cache', Path(__file__).with_name('.cache') / 'ocr')
+    workers = max(1, min(len(groups), settings.get('ocr_workers', 4))) if ocr_enabled else 1
+    if ocr_enabled:
+        from slide_ocr import read_text, refine_export_text
+
+    def write_selected(task):
+        seq, group = task
+        item = images[group['representative']]
+        override = (crops or {}).get(str(item['id']))
+        if override is not None:
+            item = {**item, 'crop': override, 'quad': None}
+        data = source.read(item['name'])
+        if item.get('sha256') and hashlib.sha256(data).hexdigest() != item['sha256']:
+            raise ValueError(f'Source image changed since analysis: {item["name"]}. Re-run the scan.')
+        (dest / 'originals' / f"{seq:04d}{Path(item['name']).suffix.lower()}").write_bytes(data)
+        slide = extract(decode(data), item)
+        ocr = item.get('ocr', {})
+        if overrides is not None and ocr_enabled and (override is not None or ocr.get('status') != 'ok'):
+            ocr = read_text(slide, cache)
+        elif override is not None:
+            ocr = {'status': 'crop-changed'}
+        height, width = slide.shape[:2]
+        footer = footer_number(ocr, width, height)
+        if ocr_enabled and ocr.get('status') == 'ok':
+            ocr = refine_export_text(slide, ocr, cache)
+        ok, encoded = cv2.imencode('.png', slide)
+        if not ok:
+            raise ValueError('PNG encoding failed')
+        (dest / 'slides' / f'{seq:04d}.png').write_bytes(encoded.tobytes())
+        if overrides is None:
+            item['native_preview'] = f'selected/slides/{seq:04d}.png'
+        if ocr.get('status') == 'ok':
+            (dest / 'text' / f'{seq:04d}.txt').write_text(ocr['text'], encoding='utf-8')
+            (dest / 'text' / f'{seq:04d}.json').write_text(json.dumps(ocr, ensure_ascii=False, indent=2), encoding='utf-8')
+        record = slide_text_record(seq, item['name'], slide, ocr)
+        rows = [[seq, item['name'], images[member]['name'], *item['crop'], width, height,
+                 '; '.join(group.get('review_reasons', [])), json.dumps(item.get('quad'))] for member in group['members']]
+        return record, footer, rows, ocr.get('export_refinement')
+
+    records, footers = [], []
+    refinement = {'attempted': 0, 'applied': 0}
     with ((dest / 'mapping.csv').open('w', newline='', encoding='utf-8-sig') as f,
-          (dest / SESSION_TEXT).open('w', encoding='utf-8', newline='\n') as session_text):
+          (dest / SESSION_TEXT).open('w', encoding='utf-8', newline='\n') as session_text,
+          concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool):
         writer = csv.writer(f)
         writer.writerow(['slide', 'selected_source', 'member_source', 'crop_x1', 'crop_y1', 'crop_x2', 'crop_y2',
                          'slide_width','slide_height','quality_flags','quad_json'])
-        for seq, group in enumerate(groups, 1):
-            item = images[group['representative']]
-            override=(crops or {}).get(str(item['id']))
-            if override is not None:
-                item={**item,'crop':override,'quad':None,'crop_mode':'review-crop'}
-            data = source.read(item['name'])
-            if item.get('sha256') and hashlib.sha256(data).hexdigest()!=item['sha256']:
-                raise ValueError(f'Source image changed since analysis: {item["name"]}. Re-run the scan.')
-            (dest / 'originals' / f"{seq:04d}{Path(item['name']).suffix.lower()}").write_bytes(data)
-            slide = extract(decode(data), item)
-            if (overrides is not None and manifest.get('settings', {}).get('ocr') == 'on'
-                    and (override is not None or item.get('ocr', {}).get('status') != 'ok')):
-                from slide_ocr import read_text
-                cache = manifest['settings'].get('ocr_cache', Path(__file__).with_name('.cache') / 'ocr')
-                item = {**item, 'ocr': read_text(slide, cache)}
-            elif override is not None:
-                item['ocr']={'status':'crop-changed'}
-            ok, encoded = cv2.imencode('.png', slide)
-            if not ok:
-                raise ValueError('PNG encoding failed')
-            (dest / 'slides' / f'{seq:04d}.png').write_bytes(encoded.tobytes())
-            if overrides is None:
-                item['native_preview']=f'selected/slides/{seq:04d}.png'
-            if item.get('ocr',{}).get('status')=='ok':
-                (dest / 'text' / f'{seq:04d}.txt').write_text(item['ocr']['text'],encoding='utf-8')
-                (dest / 'text' / f'{seq:04d}.json').write_text(json.dumps(item['ocr'],ensure_ascii=False,indent=2),encoding='utf-8')
-            session_text.write(json.dumps(slide_text_record(seq, item['name'], slide, item.get('ocr', {})),
-                                          ensure_ascii=False, separators=(',', ':')) + '\n')
-            for member in group['members']:
-                writer.writerow([seq, item['name'], images[member]['name'], *item['crop'],slide.shape[1],slide.shape[0],
-                                 '; '.join(group.get('review_reasons',[])),json.dumps(item.get('quad'))])
+        for record, footer, rows, refined in pool.map(write_selected, enumerate(groups, 1)):
+            records.append(record)
+            footers.append(footer)
+            writer.writerows(rows)
+            if refined:
+                refinement['attempted'] += 1
+                refinement['applied'] += int(refined['applied'])
+        confirm_footer_numbers(records, footers)
+        for record in records:
+            session_text.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
+    return refinement
 
 
 def review_page(manifest):

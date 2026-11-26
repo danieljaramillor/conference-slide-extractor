@@ -2,15 +2,15 @@
 
 import re
 from bisect import bisect_left, bisect_right
-from statistics import median
 
 import cv2
 import numpy as np
 
+from slide_tables import aligned_tables, combine_tables, value_text
+
 
 SESSION_TEXT = 'slides.jsonl'
 _PAGE = re.compile(r'(?:slide|page)\s+(\d{1,4})(?:\s*(?:of|/)\s*\d{1,4})?', re.I)
-_DATA = re.compile(r'[+−-]?\s*\d[\d.,%±/–−()\[\] -]*')
 _SINGLE_NUMBER = re.compile(r'[+−-]?\s*\d+(?:[.,]\d+)*\s*%?')
 _REREAD_LIMIT = 8
 
@@ -84,12 +84,17 @@ def _grid_rows(image, boxes, ink, x_bands, y_bands, scales, remaining):
     xs = [(start+end)//2 for start, end in x_bands]
     ys = [(start+end)//2 for start, end in y_bands]
     populated, uncertain, supported = {}, {}, set()
+    labelled_rows, numeric_rows = set(), set()
     for label, left, top, right, bottom, score in boxes:
         left, top, right, bottom = left*sx, top*sy, right*sx, bottom*sy
         column = bisect_right(xs, (left+right)/2)-1
         row = bisect_right(ys, (top+bottom)/2)-1
         if 0 <= row < len(ys)-1 and 0 <= column < len(xs)-1:
             supported.add((row, column))
+            if column == 0 and any(char.isalpha() for char in label):
+                labelled_rows.add(row)
+            elif column > 0 and (value_text(label) or label[0].isdigit()):
+                numeric_rows.add(row)
             contained = left >= xs[column] and right <= xs[column+1] and top >= ys[row] and bottom <= ys[row+1]
             if contained and score >= .80:
                 populated.setdefault((row, column), []).append((label, top+bottom, left))
@@ -104,7 +109,8 @@ def _grid_rows(image, boxes, ink, x_bands, y_bands, scales, remaining):
 
     # A blank division often separates two flowchart lanes. Its center has no
     # textual support, even when the detected rules resemble a table.
-    if len(supported) < max(4, (len(ys)-1)*(len(xs)-1)*.30) or len({c for _,c in supported}) < len(xs)-1:
+    if (len(supported) < max(4, (len(ys)-1)*(len(xs)-1)*.30)
+            or len({c for _,c in supported}) < len(xs)-1 or len(labelled_rows & numeric_rows) < 2):
         return None, remaining
 
     rows = [[None]*(len(xs)-1) for _ in range(len(ys)-1)]
@@ -185,61 +191,11 @@ def _ruled_tables(image, boxes):
     return tables, grid_bounds
 
 
-def _aligned_tables(boxes, width):
-    """Require repeated rows of separately recognized labels and numeric cells."""
-    if len(boxes) < 9:
-        return []
-    typical = median(box[4]-box[2] for box in boxes)
-    rows = []
-    for box in sorted(boxes, key=_mid_y):
-        if not rows or _mid_y(box)-_mid_y(rows[-1][0]) > .48*typical:
-            rows.append([])
-        rows[-1].append(box)
-    tables, block = [], []
-
-    def finish():
-        if len(block) < 3:
-            return
-        left = min(cell[1] for row in block for cell in row)
-        right = max(cell[3] for row in block for cell in row)
-        if right-left < .13*width:
-            return
-        tables.append({'bounds': [round(left), round(min(cell[2] for cell in block[0])), round(right),
-                                  round(max(cell[4] for cell in block[-1]))],
-                       'method': 'aligned_ocr', 'status': 'inferred_rows',
-                       'rows': [[cell[0] for cell in row] for row in block]})
-
-    for row in rows:
-        row.sort(key=lambda box: box[1])
-        if (not 3 <= len(row) <= 15 or min(cell[5] for cell in row) < .86
-                or not any(char.isalpha() for char in row[0][0])
-                or any(not _DATA.fullmatch(cell[0]) for cell in row[1:])
-                or any(a[3] > b[1] for a,b in zip(row,row[1:]))):
-            finish()
-            block = []
-            continue
-        if block:
-            anchor = block[0]
-            if (len(anchor) != len(row) or _mid_y(row[0])-_mid_y(block[-1][0]) > 2.6*typical
-                    or abs(anchor[0][1]-row[0][1]) > typical
-                    or any(min(abs(a[1]-b[1]), abs(a[3]-b[3]), abs(a[1]+a[3]-b[1]-b[3])/2) > .7*typical
-                           for a,b in zip(anchor[1:],row[1:]))):
-                finish()
-                block = []
-        block.append(row)
-    finish()
-    return tables
-
-
 def slide_text_record(number, name, image, ocr):
     status = ocr.get('status', 'unavailable')
     boxes = _ocr_boxes(ocr) if status == 'ok' else []
     tables, grid_bounds = _ruled_tables(image, boxes) if len(boxes) >= 4 else ([], [])
-    # Inferred rows must not reuse an OCR box rejected by the physical grid.
-    unassigned = [box for box in boxes if not any(
-        left < box[3] and box[1] < right and top < box[4] and box[2] < bottom
-        for left,top,right,bottom in grid_bounds)]
-    tables.extend(_aligned_tables(unassigned, image.shape[1]))
+    tables = combine_tables(tables, grid_bounds, aligned_tables(boxes, image.shape[1], grid_bounds, tables))
     return {'slide_number': number, 'printed_slide_number': _printed_number(boxes, image.shape[0]),
             'source': name, 'ocr_status': status, 'text': ocr['text'] if status == 'ok' else None,
             'tables': sorted(tables, key=lambda table: (table['bounds'][1], table['bounds'][0]))}

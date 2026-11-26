@@ -15,6 +15,12 @@ import numpy as np
 import cv2
 
 ENGINE_VERSION='rapidocr-3.10-v6-small-det960-v1'
+HIGH_RES_ENGINE_VERSION='rapidocr-3.10-v6-small-det1536-v1'
+_COMPACT_CITATION = re.compile(r',\d+\.[A-Za-z]')
+_CITATION_SEPARATOR = re.compile(r',\s*(?=\d{1,2}\.\s*[A-Za-z])')
+_MONTH_DATE = re.compile(r'\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|'
+                         r'Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?) '
+                         r'\d{1,2},\s*(?:19|20)\d{2}\b', re.I)
 _local=threading.local()
 _NUMBER = re.compile(r'\d+(?:[.,]\d+)?')
 _SIGNED_NUMBER = re.compile(r'(?<![\w.,])[-+−]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?')
@@ -28,8 +34,9 @@ _AFFILIATION = re.compile(r'(?<![^\W\d_])(?:hospital|universit[^\W\d_]*|institut
 _AFFILIATION_MARKER = re.compile(r'(^|;\s*)(?:\d{1,2}�?|[¹²³⁴⁵⁶⁷⁸⁹⁰]{1,2}|&)(?=[^\W\d_])')
 
 
-def engine():
-    if not hasattr(_local,'ocr'):
+def engine(*, high_res=False):
+    attribute = 'high_res_ocr' if high_res else 'ocr'
+    if not hasattr(_local, attribute):
         import rapidocr
         from rapidocr import RapidOCR
         models=Path(rapidocr.__file__).parent/'models'
@@ -39,16 +46,21 @@ def engine():
         for path in paths.values():
             if not path.is_file():
                 raise RuntimeError(f'Missing bundled OCR model {path}. Reinstall rapidocr==3.10.0.')
-        _local.ocr=RapidOCR(params={**{k:str(v) for k,v in paths.items()},
+        reader = RapidOCR(params={**{k:str(v) for k,v in paths.items()},
             'EngineConfig.onnxruntime.intra_op_num_threads':1,
             'EngineConfig.onnxruntime.inter_op_num_threads':1,
-            'Det.limit_side_len':960,'Det.limit_type':'max',
+            'Det.limit_side_len':1536 if high_res else 960,'Det.limit_type':'max',
             'Global.max_side_len':4096,'Global.log_level':'error'})
-    return _local.ocr
+        setattr(_local, attribute, reader)
+    return getattr(_local, attribute)
 
 
 def read_text(image, cache_dir):
-    key=hashlib.sha256(ENGINE_VERSION.encode()+str(image.shape).encode()+image.tobytes()).hexdigest()
+    return _read_text(image, cache_dir, ENGINE_VERSION, engine)
+
+
+def _read_text(image, cache_dir, version, get_engine):
+    key=hashlib.sha256(version.encode()+str(image.shape).encode()+image.tobytes()).hexdigest()
     cache_dir=Path(cache_dir)
     cache_dir.mkdir(parents=True,exist_ok=True)
     path=cache_dir/f'{key}.json'
@@ -57,24 +69,116 @@ def read_text(image, cache_dir):
             return json.loads(path.read_text(encoding='utf-8'))
         except (OSError,ValueError):
             pass
-    result=engine()(image,use_det=True,use_cls=False,use_rec=True,text_score=.50)
+    result=get_engine()(image,use_det=True,use_cls=False,use_rec=True,text_score=.50)
     lines=[]
     if result.txts is not None:
         for text,score,box in zip(result.txts,result.scores,result.boxes):
             pts=np.asarray(box,float)
             lines.append({'text':str(text),'score':round(float(score),4),'box':pts.tolist(),
                           'height':round(float((np.linalg.norm(pts[3]-pts[0])+np.linalg.norm(pts[2]-pts[1]))/2),2)})
-    strong=[line for line in lines if line['score']>=.75]
-    output={'status':'ok','engine':ENGINE_VERSION,'lines':lines,
-            'text':'\n'.join(line['text'] for line in lines),
-            'characters':sum(len(line['text']) for line in strong),
-            'mean_confidence':round(float(np.mean([line['score'] for line in strong])),3) if strong else 0.,
-            'median_text_height':round(float(np.median([line['height'] for line in strong])),2) if strong else 0.}
+    output=_text_result(lines, version)
     # Each thread writes a different temporary filename, then atomically replaces.
     temp=path.with_suffix(f'.{uuid.uuid4().hex}.tmp')
     temp.write_text(json.dumps(output,ensure_ascii=False),encoding='utf-8')
     temp.replace(path)
     return output
+
+
+def _text_result(lines, version):
+    strong = [line for line in lines if line['score'] >= .75]
+    return {'status': 'ok', 'engine': version, 'lines': lines,
+            'text': '\n'.join(line['text'] for line in lines),
+            'characters': sum(len(line['text']) for line in strong),
+            'mean_confidence': round(float(np.mean([line['score'] for line in strong])), 3) if strong else 0.,
+            'median_text_height': round(float(np.median([line['height'] for line in strong])), 2) if strong else 0.}
+
+
+def _export_text_needs_higher_resolution(image, lines):
+    long_edge = max(image.shape[:2])
+    if long_edge <= 960:
+        return False
+    # At the standard detector size, several lines this small indicate that
+    # nearby labels or counts may have disappeared during detection.
+    small = [line for line in lines if 0 < line.get('height', 0) * 960 / long_edge <= 17]
+    return len(small) >= 8 or any(_COMPACT_CITATION.search(line['text']) for line in small)
+
+
+def _text_bounds(lines):
+    points = np.asarray([line['box'] for line in lines])
+    return points.min(axis=1), points.max(axis=1)
+
+
+def _numbers_for_spacing(text):
+    text = _MONTH_DATE.sub(lambda match: match[0].replace(',', ' '), text)
+    if re.match(r'^\d{1,2}\.\s*\w', text):
+        # In a bibliography a comma can mark the start of the next numbered
+        # reference. Treat it as a separator in both readings.
+        text = _CITATION_SEPARATOR.sub(', ', text)
+    return _values(numeric_text(text))
+
+
+def _restores_word_boundaries(original, detailed):
+    return (''.join(original.split()) == ''.join(detailed.split())
+            and len(detailed.split()) > len(original.split())
+            and _numbers_for_spacing(original) == _numbers_for_spacing(detailed))
+
+
+def _merge_export_lines(original, detailed):
+    if not original or not detailed:
+        return original, 0, 0
+    first, last = _text_bounds(original)
+    detail_first, detail_last = _text_bounds(detailed)
+    start = np.maximum(first[:, None], detail_first)
+    end = np.minimum(last[:, None], detail_last)
+    common = np.maximum(end - start, 0).prod(axis=2)
+    smaller = np.minimum((last - first).prod(axis=1)[:, None], (detail_last - detail_first).prod(axis=1))
+    overlaps = common >= .36 * np.maximum(1, smaller)
+    matches_per_original = overlaps.sum(axis=1)
+
+    revised = original.copy()
+    insertions = [[] for _ in range(len(original) + 1)]
+    added = respaced = 0
+    for index, line in enumerate(detailed):
+        linked = np.flatnonzero(overlaps[:, index])
+        label = line['text']
+        if len(linked) == 0 and line['score'] >= .90:
+            letters_or_digits = [char for char in label if char.isalnum()]
+            if len(letters_or_digits) >= 2 or any(char.isdigit() for char in letters_or_digits):
+                x, y = detail_first[index]
+                following = np.flatnonzero((first[:, 1] > y + 8) | ((abs(first[:, 1] - y) <= 8) & (first[:, 0] > x)))
+                at = following[0] if len(following) else len(original)
+                insertions[at].append(line)
+                added += 1
+        elif len(linked) == 1 and matches_per_original[linked[0]] == 1 and line['score'] >= .92:
+            previous = original[linked[0]]['text']
+            # The second pass may restore spacing, but it cannot substitute a
+            # conflicting number, sign, comparator, or unit for a known line.
+            if _restores_word_boundaries(previous, label):
+                revised[linked[0]] = line
+                respaced += 1
+
+    merged = []
+    for index, line in enumerate(revised):
+        merged.extend(insertions[index])
+        merged.append(line)
+    merged.extend(insertions[-1])
+    return merged, added, respaced
+
+
+def refine_export_text(image, ocr, cache_dir):
+    """Recover small labels on selected native exports without changing grouping OCR."""
+    if ocr.get('status') != 'ok' or not _export_text_needs_higher_resolution(image, ocr.get('lines', [])):
+        return ocr
+    metadata = {'detector_long_edge': 1536, 'applied': False, 'added_lines': 0, 'respaced_lines': 0}
+    try:
+        detailed = _read_text(image, cache_dir, HIGH_RES_ENGINE_VERSION, lambda: engine(high_res=True))
+    except Exception:
+        # A failed optional reread still exports the original OCR result.
+        return {**ocr, 'export_refinement': {**metadata, 'status': 'unavailable'}}
+    lines, added, respaced = _merge_export_lines(ocr['lines'], detailed.get('lines', []))
+    applied = bool(added or respaced)
+    result = {**ocr, **_text_result(lines, ocr.get('engine', ENGINE_VERSION))} if applied else ocr
+    return {**result, 'export_refinement': {**metadata, 'applied': applied, 'added_lines': added, 'respaced_lines': respaced}}
 
 
 def normalized(text):

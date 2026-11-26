@@ -101,6 +101,40 @@ class SessionTextTests(unittest.TestCase):
         self.assertEqual(table['rows'][1], ['Group B','-8.2%','6'])
         self.assertIsNone(result['printed_slide_number'])
 
+    def test_keeps_single_value_column_and_header_separate_from_chart_axis(self):
+        def box(text, x, y, width):
+            return {'text':text,'score':.98,'box':[[x,y],[x+width,y],[x+width,y+25],[x,y+25]]}
+
+        lines = [box('Participant',100,175,145),box('Result',447,175,75)]
+        for row,label,value in zip(range(6),('Arm A','Arm B','Arm C','Arm D','Arm E','Arm F'),
+                                   ('22 (36%)','12 (32%)','9 (15%)','0','3 (5%)','2 (3%)')):
+            y = 220+40*row
+            lines.extend([box(label,100,y,80),box(value,450,y,90),box(str(20-10*row),700,y,38),
+                          box('• Adjacent text',845,y,170)])
+        image = np.full((800,1200,3),255,np.uint8)
+        ocr = {'status':'ok','text':'\n'.join(line['text'] for line in lines),'lines':lines}
+        table, = slide_text_record(1,'table.png',image,ocr)['tables']
+        self.assertEqual(table['rows'][0],['Participant','Result'])
+        self.assertEqual(table['rows'][3],['Arm C','9 (15%)'])
+        self.assertEqual(table['cell_bounds'][3][1],[450,300,540,325])
+        self.assertEqual(len(table['rows']),7)
+
+    def test_keeps_blank_numeric_lane_in_row_without_shifting_later_value(self):
+        lines = []
+        for row, fields in enumerate((('A','17.5%','25'),('B',None,'18'),('C','8.0%','6'),('D','9.1%','9'))):
+            y = 220+40*row
+            for column, value in enumerate(fields):
+                if value is None:
+                    continue
+                x = 100+275*column
+                lines.append({'text': value, 'score':.98,
+                              'box':[[x,y],[x+60,y],[x+60,y+24],[x,y+24]]})
+        image = np.full((750,1100,3),255,np.uint8)
+        ocr = {'status':'ok','text':'\n'.join(line['text'] for line in lines),'lines':lines}
+        table, = slide_text_record(1,'table.png',image,ocr)['tables']
+        self.assertEqual(table['rows'][1],['B',None,'18'])
+        self.assertIsNone(table['cell_bounds'][1][1])
+
     def test_unpopulated_lane_between_boxes_is_not_a_table_column(self):
         image = grid_slide()
         for top, bottom in ((210,290),(290,370),(370,450)):

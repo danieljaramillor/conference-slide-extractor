@@ -23,7 +23,7 @@ In **Slide issues**, read **What to check** next to the current image. Click the
 
 **Check possible changed value** shows the same region from two captures with the original and local OCR readings when available. Compare the pixels and use **Mark checked and next** to keep both slides. If you confirm the two slides are equivalent, select both in **Review deck** and use **Merge selected**.
 
-After applying a crop, check the updated preview before approving it. Export refreshes OCR for changed crops and selected captures that lack text. The ZIP includes `slides/`, `originals/`, `text/`, `mapping.csv`, and `slides.jsonl`. The session text file follows the reviewed deck order and includes text, explicit printed slide numbers when recognized, and reconstructed table rows when supported by the image.
+After applying a crop, check the updated preview before approving it. Export refreshes OCR for changed crops and selected captures that lack text. Slides with small text may receive an additional higher-resolution pass. The ZIP includes `slides/`, `originals/`, `text/`, `mapping.csv`, and `slides.jsonl`. The session text file follows the reviewed deck order and includes text, printed slide numbers supported by a label or a consistent footer sequence, and reconstructed table rows when supported by the image.
 
 ## Review the deck
 
