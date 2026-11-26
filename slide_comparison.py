@@ -102,6 +102,61 @@ def _has_replacement(left_edges, right_edges, changed):
     return True
 
 
+def has_local_content_replacement(left, right):
+    """Find a replaced text or chart region inside otherwise matching captures."""
+    if left.shape != right.shape:
+        return False
+    height, width = left.shape[:2]
+    scale = min(1., 960 / max(height, width))
+    size = (round(width * scale), round(height * scale))
+    left, right = (cv2.GaussianBlur(cv2.resize(image, size, interpolation=cv2.INTER_AREA), (3, 3), 0)
+                   for image in (left, right))
+    delta = cv2.absdiff(left, right).max(axis=2)
+    regions, changed = _change_regions(delta > 24)
+    if not regions:
+        return False
+
+    left_edges, right_edges = map(_edges, (left, right))
+    expanded_change = cv2.dilate(changed.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    kernel = np.ones((3, 3), np.uint8)
+    lost, added = (old & ~(cv2.dilate(new.astype(np.uint8), kernel) > 0) & expanded_change
+                   for old, new in ((left_edges, right_edges), (right_edges, left_edges)))
+    gray_left, gray_right = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) for image in (left, right))
+    for x1, y1, x2, y2 in regions:
+        region = np.s_[y1:y2, x1:x2]
+        if x2 - x1 < size[0] * .08 or np.count_nonzero(delta[region] > 42) < 140:
+            continue
+        removed_count = np.count_nonzero(lost[region])
+        new_count = np.count_nonzero(added[region])
+        # Ignore small pointer marks, JPEG fringes, and elements becoming sharper
+        # while keeping their shape. Require loss of a meaningful fraction of ink.
+        if (removed_count < max(75, .08 * np.count_nonzero(left_edges[region]))
+                or new_count < max(75, .08 * np.count_nonzero(right_edges[region]))):
+            continue
+        old, new = gray_left[region], gray_right[region]
+        signed = old.astype(np.int16) - new.astype(np.int16)
+        lighter, darker = np.count_nonzero(signed > 25), np.count_nonzero(signed < -25)
+        # Fade-ins and opaque overlays produce changes almost entirely in
+        # one direction. A countdown can also erase far more ink than it adds.
+        if min(lighter, darker) < max(85, max(lighter, darker) * .25):
+            continue
+        # A slide region usually has a small set of flat colors. Do not
+        # treat presenter movement or video within a slide as replaced text.
+        for image in (left, right):
+            colors = (image[region][::2, ::2].reshape(-1, 3) // 16).astype(np.int32)
+            palette = np.bincount(colors @ [1, 16, 256], minlength=4096)
+            if np.partition(palette, -3)[-3:].sum() < .67 * len(colors):
+                break
+        else:
+            # A small geometric shift can occur when a new footer or QR code moves
+            # surrounding text. Check the affected region for matching structure.
+            window = cv2.createHanningWindow((x2 - x1, y2 - y1), cv2.CV_32F)
+            offset, confidence = cv2.phaseCorrelate(old.astype(np.float32), new.astype(np.float32), window)
+            if confidence < .78 or not 1.3 <= max(map(abs, offset)) <= .015 * size[0]:
+                return True
+    return False
+
+
 def _preserves_native_content(earlier, later):
     """Veto a recommendation when native pixels show changes to earlier content."""
     if earlier.shape != later.shape:

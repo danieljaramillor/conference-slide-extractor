@@ -70,6 +70,17 @@ def compact_table_captures():
     ]
 
 
+def tiny_numeric_captures():
+    """Keep a superscript-size value below the full-slide detector's threshold."""
+    captures = []
+    for value in ('2', '3'):
+        image = make_slide()
+        cv2.putText(image, value, (483, 428), cv2.FONT_HERSHEY_SIMPLEX, .36,
+                    (28, 28, 28), 1, cv2.LINE_AA)
+        captures.append((f'frame_{value}.png', image))
+    return captures
+
+
 def fixtures():
     wide=make_slide()
     standard=make_slide(1440,1080,'Four by three slide')

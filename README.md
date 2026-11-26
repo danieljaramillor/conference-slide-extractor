@@ -6,6 +6,8 @@ The app excludes clear speaker-only camera shots and confirmed blends between sl
 
 For recurring broadcast layouts with a separate presenter pane, the app uses neighboring captures to verify the slide boundary. It crops out the presenter and broadcast graphics before matching slides or reading text. The export keeps the full source screenshot alongside each native-resolution slide image.
 
+When a slide reveals more information, the app looks for the capture that contains the earlier content and the new material. It checks small text and table differences against the native capture before grouping slides. Rescan the source ZIP after upgrading to apply the latest checks to an existing batch.
+
 ## Install on Windows
 
 1. Open [GitHub Releases](https://github.com/danieljaramillor/conference-slide-extractor/releases/latest). Sign in with an account that has access to this repository.

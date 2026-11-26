@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
+from functools import lru_cache
 import hashlib
 import io
 import json
@@ -18,12 +19,12 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from slide_comparison import has_added_chart_outlines
+from slide_comparison import has_added_chart_outlines, has_local_content_replacement
 from slide_regions import confirmed_presenter_crops, detect_region, extract, presenter_layout, quality, recover_projected_screen
 from slide_transitions import EXCLUSION_REASON, capture_runs, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.10.1'
+APP_VERSION = '2.11.0'
 cv2.setNumThreads(1)
 
 
@@ -125,12 +126,17 @@ def compare(a, b, read_native=None):
         if has_added_chart_outlines(read_native(earlier), read_native(later)):
             annotation['prefer_first_for_outline'] = first_has_more
             localized_reveal = True
+    if (read_native is not None and not replacement and not annotation and .09 <= local_change
+            and changed < .10 and max(cover_a, cover_b) >= .94 and min(cover_a, cover_b) >= .80
+            and a.get('crop') == b.get('crop') and a.get('quad') is None and b.get('quad') is None
+            and a.get('slide_width') == b.get('slide_width') and a.get('slide_height') == b.get('slide_height')):
+        replacement = has_local_content_replacement(read_native(a), read_native(b))
     return {'mae': round(mae, 5), 'changed': round(changed, 5),
             'coverage_a': round(cover_a, 4), 'coverage_b': round(cover_b, 4),
             'title_changed': round(title, 5), 'local_change':round(local_change,4),
             'duplicate': duplicate and not replacement and not localized_reveal,
             'build': bool(build and not replacement),
-            'content_replacement': replacement, 'localized_reveal': localized_reveal, **annotation}
+            'content_replacement': replacement, 'localized_reveal': localized_reveal and not replacement, **annotation}
 
 
 def slide_features(slide):
@@ -242,8 +248,15 @@ def run(args):
     read_seconds = time.perf_counter() - start
     if not items:
         raise ValueError(f'No readable images. Errors: {errors[:3]}')
+    items_by_id = {item['id']: item for item in items}
+
+    @lru_cache(maxsize=12)
+    def cached_native(image_id):
+        capture = items_by_id[image_id]
+        return extract(decode(source.read(capture['name'])), capture)
+
     def read_native(item):
-        return extract(decode(source.read(item['name'])), item)
+        return cached_native(item['id'])
     mark_crossfades(items)
     mark_one_sided_transitions(items, read_capture=read_native)
     transitions = [item for item in items if item.get('transition')]
@@ -297,6 +310,7 @@ def run(args):
             group = {'id': len(groups)+1, 'representative': item['id'], 'members': [item['id']], 'builds': 0}
             groups.append(group)
             matchable.append(group)
+    cached_native.cache_clear()
     from slide_audit import audit
     groups, candidates, audit_log = audit(source,eligible,groups,decisions,candidates,args,out)
     audit_log['presenter_crop'] = {'captures': presenter_crops}

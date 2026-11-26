@@ -10,7 +10,8 @@ import zipfile
 import cv2
 import numpy as np
 
-from mixed_fixtures import compact_table_captures, fixtures
+from content_fixtures import heading_build_stages
+from mixed_fixtures import compact_table_captures, fixtures, tiny_numeric_captures
 from presenter_fixtures import SLIDE_BOUNDS, presenter_annotation_sequence, presenter_capture_sequence
 from scan_integrity_check import check as check_integrity
 from speaker_fixtures import camera_capture
@@ -127,6 +128,24 @@ def check_compact_table(executable, root):
     assert check_integrity(output) == {'captures': len(cases), 'slides': 2, 'text_files': 2}
 
 
+def check_replaced_heading(executable, root):
+    frames = [image for stage in heading_build_stages() for image in (stage, stage)]
+    cases = [(f'capture-{index}.jpg', image) for index, image in enumerate(frames)]
+    _, output, manifest = scan_captures(executable, root, 'replaced-heading', cases)
+    selected = [group for group in manifest['groups'] if not group.get('excluded')]
+    assert [(group['representative'], group['members']) for group in selected] == [(0, [0, 1]), (4, [2, 3, 4, 5])], selected
+    assert check_integrity(output) == {'captures': len(cases), 'slides': 2, 'text_files': 2}
+
+
+def check_tiny_numeric_change(executable, root):
+    cases = tiny_numeric_captures()
+    _, output, manifest = scan_captures(executable, root, 'tiny-numeric', cases)
+    assert [group['members'] for group in manifest['groups']] == [[0], [1]], manifest['groups']
+    split, = manifest['audit']['numeric_splits']
+    assert split['numeric_source'] == 'native region' and split['numeric_changes'] == [['3', '2']], split
+    assert check_integrity(output) == {'captures': len(cases), 'slides': 2, 'text_files': 2}
+
+
 def check(executable, browser=False):
     with tempfile.TemporaryDirectory(prefix='slide-exe-check-') as directory:
         root = Path(directory)
@@ -146,6 +165,8 @@ def check(executable, browser=False):
         check_presenter_crops(executable, root)
         check_presenter_annotations(executable, root)
         check_compact_table(executable, root)
+        check_replaced_heading(executable, root)
+        check_tiny_numeric_change(executable, root)
         if browser:
             from browser_batch_check import check as check_browser
             from browser_exclusion_check import check as check_exclusions, check_retained_blend, check_transition_review

@@ -17,6 +17,8 @@ import cv2
 ENGINE_VERSION='rapidocr-3.10-v6-small-det960-v1'
 _local=threading.local()
 _NUMBER = re.compile(r'\d+(?:[.,]\d+)?')
+_SIGNED_NUMBER = re.compile(r'(?<![\w.,])[-+−]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?')
+_COUNT_THEN_PERCENT = re.compile(r'(\d+\s*/\s*\d+)\s*,\s*(?=\d+(?:[.,]\d+)?\s*%)')
 
 
 def engine():
@@ -48,7 +50,7 @@ def read_text(image, cache_dir):
             return json.loads(path.read_text(encoding='utf-8'))
         except (OSError,ValueError):
             pass
-    result=engine()(image,use_cls=False)
+    result=engine()(image,use_det=True,use_cls=False,use_rec=True,text_score=.50)
     lines=[]
     if result.txts is not None:
         for text,score,box in zip(result.txts,result.scores,result.boxes):
@@ -84,6 +86,14 @@ def numeric_text(text):
     return re.sub(r'(?<=[A-Za-z])0(?=[A-Za-z]|\b)','o',text).casefold()
 
 
+def _values(text):
+    # The comma after an integer ratio separates two fields: 17/24,70.8%.
+    # Do not treat all commas as separators since they can be decimal marks.
+    text = _COUNT_THEN_PERCENT.sub(r'\1 ', text)
+    return [value.replace('−', '-').replace(' ', '').lstrip('+')
+            for value in _SIGNED_NUMBER.findall(text)]
+
+
 def signature(item):
     if '_text_signature' in item:
         return item['_text_signature']
@@ -115,12 +125,13 @@ def signature(item):
     rich=[]
     for line in lines:
         text=numeric_text(line['text'])
-        numbers=_NUMBER.findall(text)
+        numbers=_values(text)
         # A decimal and an integer can occupy the same cell. Preserve the
         # existing template structure for ranges and other multi-number lines.
         template=(' '.join(re.findall(r'\w+|#', _NUMBER.sub('#', text))) if len(numbers)==1
                   else _NUMBER.sub('#', normalized(text)))
-        rich.append({**line,'center':np.asarray(line['box']).mean(axis=0)/[item['slide_width'],item['slide_height']],
+        box = np.asarray(line['box']) / [item['slide_width'], item['slide_height']]
+        rich.append({**line, 'center': box.mean(axis=0), 'size': np.ptp(box, axis=0),
                      'numbers':numbers, 'template':template})
     item['_text_signature']=(tokens,normalized(' '.join(l['text'] for l in headings)),rich)
     return item['_text_signature']
@@ -138,8 +149,9 @@ def _matched_numeric_lines(a, b):
     nearest_a, nearest_b = {}, {}
     for i, line_a in enumerate(a):
         for j, line_b in enumerate(b):
-            dx, dy = line_a['center'] - line_b['center']
-            if max(abs(dx), abs(dy)) > .025:
+            dx, dy = np.abs(line_a['center'] - line_b['center'])
+            width, height = np.minimum(line_a['size'], line_b['size'])
+            if dx > min(.025, .65 * width) or dy > min(.025, .55 * height):
                 continue
             if SequenceMatcher(None, line_a['template'], line_b['template']).ratio() <= .90:
                 continue
@@ -151,24 +163,110 @@ def _matched_numeric_lines(a, b):
             yield a[i], b[j]
 
 
+def _numeric_box(shape, a, b, pad):
+    height, width = shape[:2]
+    corners = np.concatenate((a['box'], b['box']))
+    x1, y1 = np.maximum(np.floor(corners.min(axis=0)).astype(int) - pad, 0)
+    x2, y2 = np.minimum(np.ceil(corners.max(axis=0)).astype(int) + pad, [width, height])
+    return x1, y1, x2, y2
+
+
 def _same_numeric_pixels(left, right, a, b):
-    # An OCR segmentation error can change the transcription of an unchanged cell.
-    # Clear it only when the native pixels already agree in both OCR boxes.
     if left.shape != right.shape:
         return False
-    height, width = left.shape[:2]
-    corners = np.concatenate((a['box'], b['box']))
-    x1, y1 = np.maximum(np.floor(corners.min(axis=0)).astype(int) - 2, 0)
-    x2, y2 = np.minimum(np.ceil(corners.max(axis=0)).astype(int) + 2, [width, height])
+    x1, y1, x2, y2 = _numeric_box(left.shape, a, b, 2)
     if x2 - x1 < 3 or y2 - y1 < 3:
         return False
-    delta = cv2.absdiff(left[y1:y2, x1:x2], right[y1:y2, x1:x2]).max(axis=2)
-    if delta.max() > 16 or delta.mean() > 4:
+    first, second = left[y1:y2, x1:x2], right[y1:y2, x1:x2]
+    if cv2.absdiff(first, second).max() > 34:
         return False
-    # JPEG noise can move individual pixels. A connected change in a glyph is
-    # enough to preserve the OCR conflict even when the contrast is low.
-    _, _, regions, _ = cv2.connectedComponentsWithStats((delta > 9).astype(np.uint8))
-    return regions[1:, cv2.CC_STAT_AREA].max(initial=0) < 4
+    levels = [cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY).astype(np.int16) for patch in (first, second)]
+    signed = levels[0] - levels[1]
+    if np.abs(signed).max() > 26 or np.abs(signed).mean() > 4.3:
+        return False
+    # JPEG fringes can create connected differences where opposite brightness
+    # changes meet. Preserve a coherent change of even a faint 2x2 glyph.
+    for polarity in (signed, -signed):
+        ink = (polarity >= 11).astype(np.uint8)
+        if cv2.erode(ink, np.ones((2, 2), np.uint8), borderType=cv2.BORDER_CONSTANT,
+                     borderValue=0).any():
+            return False
+    return True
+
+
+def _cursor_occludes(covered, clear, shorter, longer):
+    if covered.shape != clear.shape or len(shorter['numbers']) != 1 or len(longer['numbers']) != 1:
+        return False
+    before = shorter['numbers'][0]
+    after = longer['numbers'][0]
+    if not (0 < len(after) - len(before) <= 2 and after.endswith(before)):
+        return False
+    x1, y1, x2, y2 = _numeric_box(covered.shape, shorter, longer, 5)
+    if x2 - x1 < 6 or y2 - y1 < 9:
+        return False
+    levels = [cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY).astype(np.int16)
+              for image in (covered, clear)]
+    signed = levels[0] - levels[1]
+    mask = (np.abs(signed) >= 30).astype(np.uint8)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    for x, y, w, h, count in stats[1:]:
+        if not (6 <= w <= 22 and 9 <= h <= 30 and .42 <= w / h <= .94):
+            continue
+        if x > .40 * signed.shape[1] or cv2.countNonZero(mask) - count > 8:
+            continue
+        # A Windows arrow leaves a straight left edge, a light interior and a
+        # dark lower tip. Removing a right-aligned leading digit cannot draw it.
+        stroke = signed[y:y+h, x:x+w]
+        left_edge = stroke[:int(.88 * h), :max(1, round(.18 * w))]
+        interior = stroke[:int(.65 * h), max(1, round(.14 * w)):round(.7 * w)]
+        tip = stroke[int(.72 * h):, int(.42 * w):]
+        if (np.count_nonzero((left_edge < -65).any(axis=1)) >= .5 * h
+                and np.count_nonzero(interior > 65) >= 4 and np.count_nonzero(tip < -50) >= 4):
+            return True
+    return False
+
+
+def _recognize_cell(patch):
+    height, width = patch.shape[:2]
+    scale = min(4, max(.5, min(64 / height, 1000 / width)))
+    if scale != 1:
+        patch = cv2.resize(patch, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    result = engine()(patch, use_det=False, use_cls=False, use_rec=True, text_score=.75)
+    if result.txts:
+        return result.txts[0], float(result.scores[0])
+    return '', 0.
+
+
+def local_numeric_evidence(left, right):
+    """Reread isolated glyph changes that full-slide OCR could miss."""
+    if left.shape != right.shape:
+        return []
+    gray_a, gray_b = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) for image in (left, right))
+    mask = (cv2.absdiff(gray_a, gray_b) >= 34).astype(np.uint8)
+    changed = cv2.countNonZero(mask)
+    height, width = mask.shape
+    if not 6 <= changed <= min(260, mask.size * .0004):
+        return []
+    glyph_height = max(5, round(height * .012))
+    joined = cv2.dilate(mask, np.ones((5, 7), np.uint8))
+    _, _, regions, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
+    if len(regions) > 5:
+        return []
+    for x, y, w, h, _ in regions[1:]:
+        if not (7 <= w <= glyph_height * 4 and 5 <= h <= glyph_height * 2.4):
+            continue
+        if cv2.countNonZero(mask[y:y+h, x:x+w]) < 6:
+            continue
+        x1, x2 = max(0, x - glyph_height), min(width, x + w + glyph_height)
+        y1, y2 = max(0, y - 4), min(height, y + h + 4)
+        a, b = (_recognize_cell(image[y1:y2, x1:x2]) for image in (left, right))
+        if min(a[1], b[1]) < .94:
+            continue
+        if not all(_SIGNED_NUMBER.fullmatch(numeric_text(value)) for value, _ in (a, b)):
+            continue
+        if _values(a[0]) != _values(b[0]):
+            return [[a[0], b[0]]]
+    return []
 
 
 def text_evidence(a,b,*,native_pair=None):
@@ -176,17 +274,26 @@ def text_evidence(a,b,*,native_pair=None):
     shared=sum((ta&tb).values())
     ca=shared/max(1,sum(ta.values())); cb=shared/max(1,sum(tb.values()))
     heading=SequenceMatcher(None,ha,hb).ratio() if ha and hb else 0.
-    numeric_changes=[]
+    numeric_changes, numeric_occlusions = [], []
     if max(ca,cb)>.65 or heading>.80:
         images = None
         for line_a, line_b in _matched_numeric_lines(_numeric_lines(a, la), _numeric_lines(b, lb)):
             if native_pair is not None and images is None:
                 images = native_pair()
-            if images is not None and _same_numeric_pixels(*images, line_a, line_b):
-                continue
+            if images is not None:
+                left, right = images
+                if _same_numeric_pixels(left, right, line_a, line_b):
+                    continue
+                if _cursor_occludes(left, right, line_a, line_b):
+                    numeric_occlusions.append('a')
+                    continue
+                if _cursor_occludes(right, left, line_b, line_a):
+                    numeric_occlusions.append('b')
+                    continue
             numeric_changes.append([line_a['text'], line_b['text']])
             break
     return {'text_cover_a':round(ca,4),'text_cover_b':round(cb,4),
             'heading_similarity':round(heading,4),'numeric_conflict':bool(numeric_changes),
             'numeric_changes':numeric_changes,
+            'numeric_occlusions': numeric_occlusions,
             'text_words_a':sum(ta.values()),'text_words_b':sum(tb.values())}

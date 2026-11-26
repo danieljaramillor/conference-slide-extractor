@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import concurrent.futures
+from collections import defaultdict
+from functools import lru_cache
 import time
 from pathlib import Path
 
 import cv2
 
 from slide_regions import extract
-from slide_ocr import read_text, text_evidence, signature
+from slide_ocr import local_numeric_evidence, read_text, text_evidence, signature
 from slide_speakers import CHECK_SPEAKER, ENGINE, SPEAKER_ONLY, create_detector, is_protected_slide, speaker_status
 from slide_transitions import ONE_SIDED_REVIEW_REASON
 
@@ -83,36 +85,70 @@ def audit(source,items,groups,decisions,candidates,args,out):
     start=time.perf_counter()
     def read_native(item):
         return extract(decode(source.read(item['name'])),item)
+
+    @lru_cache(maxsize=3)
+    def native_for_comparison(index):
+        return read_native(by_id[index])
+
     def compare_text(a, b):
-        return text_evidence(a, b, native_pair=lambda: (read_native(a), read_native(b)))
+        return text_evidence(a, b, native_pair=lambda: (native_for_comparison(a['id']), native_for_comparison(b['id'])))
+    def read_targets(targets):
+        if not targets:
+            return
+        cache = getattr(args, 'ocr_cache', Path(__file__).with_name('.cache') / 'ocr')
+        def work(i):
+            try:
+                return i, read_text(read_native(by_id[i]), cache)
+            except Exception as exc:
+                return i, {'status': 'error', 'error': str(exc)}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=getattr(args,'ocr_workers',4)) as pool:
+            for n,(i,result) in enumerate(pool.map(work,sorted(targets)),1):
+                by_id[i]['ocr']=result
+                if n%25==0:
+                    print(f'  OCR {n}/{len(targets)}',flush=True)
+
+    def read_new_representatives(groups, phase):
+        missing = {g['representative'] for g in groups
+                   if not g.get('excluded') and 'ocr' not in by_id[g['representative']]}
+        if missing:
+            print(f'  Offline OCR: {len(missing)} newly selected frames ({phase})...', flush=True)
+            read_targets(missing)
+        return len(missing)
+
     if log['ocr_enabled']:
         targets={g['representative'] for g in groups}
         suspicious=[d for d in decisions if d['reason']=='build' or
                     (d['reason']=='duplicate' and (d['changed']>0 or d.get('local_change',0)>0))]
         targets.update(d[k] for d in suspicious for k in ('image','matched'))
         print(f'  Offline OCR: {len(targets)} representative / changed-content frames...',flush=True)
-        def work(i):
-            item=by_id[i]
-            try:
-                slide=read_native(item)
-                return i,read_text(slide,getattr(args,'ocr_cache',Path(__file__).with_name('.cache')/'ocr'))
-            except Exception as exc:
-                return i,{'status':'error','error':str(exc)}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=getattr(args,'ocr_workers',4)) as pool:
-            for n,(i,result) in enumerate(pool.map(work,sorted(targets)),1):
-                by_id[i]['ocr']=result
-                if n%25==0:
-                    print(f'  OCR {n}/{len(targets)}',flush=True)
+        read_targets(targets)
         failures=[i for i in targets if by_id[i]['ocr']['status']!='ok']
-        if len(failures)==len(targets):
-            raise RuntimeError('OCR failed for every target. Install requirements.txt or explicitly use --ocr off. '+by_id[failures[0]]['ocr']['error'])
-        log['ocr_images']=len(targets)
-        log['ocr_errors']=len(failures)
+        if failures and len(failures)==len(targets):
+            raise RuntimeError('OCR failed for every target. Install requirements.txt or explicitly use --ocr off. '
+                               +by_id[failures[0]]['ocr'].get('error', by_id[failures[0]]['ocr']['status']))
         # Separate confidently detected number changes that the low-res pass missed.
-        for d in suspicious:
+        suspicious_ids = {d['image'] for d in suspicious}
+        separations = defaultdict(set)
+        clear_alternates = defaultdict(set)
+        for d in decisions:
             a,b=by_id[d['image']],by_id[d['matched']]
-            evidence=compare_text(a,b)
+            evidence = compare_text(a,b) if a['id'] in suspicious_ids else {'numeric_conflict': False}
+            if (not evidence['numeric_conflict'] and d['reason']=='duplicate' and d['changed']<=.005
+                    and min(d.get('coverage_a', 0),d.get('coverage_b', 0))>=.98
+                    and a.get('sha256')!=b.get('sha256')
+                    and (a['slide_width'],a['slide_height'])==(b['slide_width'],b['slide_height'])):
+                changes = local_numeric_evidence(native_for_comparison(a['id']), native_for_comparison(b['id']))
+                if changes:
+                    evidence.update(numeric_conflict=True, numeric_changes=changes, numeric_source='native region')
+            if d['reason']=='duplicate' and not evidence['numeric_conflict']:
+                obscured = evidence.get('numeric_occlusions')
+                if obscured == ['a']:
+                    clear_alternates[a['id']].add(b['id'])
+                elif obscured == ['b']:
+                    clear_alternates[b['id']].add(a['id'])
             if evidence['numeric_conflict']:
+                separations[a['id']].add(b['id'])
+                separations[b['id']].add(a['id'])
                 group=next(g for g in groups if a['id'] in g['members'])
                 if b['id'] not in group['members'] or len(group['members'])==1:
                     continue
@@ -122,14 +158,24 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 groups.append({'id':max(g['id'] for g in groups)+1,'representative':a['id'],
                                'members':[a['id']],'builds':0})
                 log['numeric_splits'].append({'a':a['id'],'b':b['id'],**evidence})
+        for group in groups:
+            representative = group['representative']
+            alternatives = clear_alternates.get(representative, set()).intersection(group['members'])
+            for index in sorted(alternatives.difference(clear_alternates)):
+                if representative == group['representative'] or better_frame(
+                        by_id[index], by_id[group['representative']], {'duplicate': True}):
+                    group['representative'] = index
+        log['ocr_new_representatives'] = read_new_representatives(groups, 'updated grouping')
         # OCR-backed comparison of candidate groups. Pixel similarity alone cannot
         # merge charts; numeric conflicts and changed titles block the merge.
         removed=set()
         for ai,ga in enumerate(groups):
             if ga['id'] in removed or by_id[ga['representative']].get('transition_review'):
                 continue
+            blocked = set().union(*(separations.get(i, ()) for i in ga['members']))
             for gb in groups[ai+1:]:
-                if gb['id'] in removed or by_id[gb['representative']].get('transition_review'):
+                if (gb['id'] in removed or by_id[gb['representative']].get('transition_review')
+                        or not blocked.isdisjoint(gb['members'])):
                     continue
                 a,b=by_id[ga['representative']],by_id[gb['representative']]
                 if a.get('ocr',{}).get('status')!='ok' or b.get('ocr',{}).get('status')!='ok':
@@ -139,7 +185,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 if (min(evidence['text_words_a'],evidence['text_words_b'])<10 or
                     evidence['heading_similarity']<.90 or evidence['numeric_conflict'] or max(ca,cb)<.94):
                     continue
-                metric=compare(a,b,read_native)
+                metric=compare(a,b,lambda item: native_for_comparison(item['id']))
                 if metric['content_replacement']:
                     continue
                 dup=(not metric['localized_reveal'] and min(ca,cb)>.96 and metric['changed']<.06
@@ -152,13 +198,17 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 if build and not dup:
                     choose_b=cb<ca-.025 # B has additional text: almost all of A occurs in B.
                     if abs(ca-cb)<=.025:
-                        choose_b=better_frame(b,a,compare(b,a,read_native))
+                        choose_b=better_frame(b,a,compare(b,a,lambda item: native_for_comparison(item['id'])))
                 else:
                     choose_b=better_frame(b,a,{'duplicate':True})
+                    if evidence.get('numeric_occlusions') in (['a'], ['b']):
+                        choose_b = evidence['numeric_occlusions'] == ['a']
                 if bool(a.get('crossfade')) != bool(b.get('crossfade')):
                     choose_b = not b.get('crossfade')
                 if choose_b:
                     ga['representative']=b['id']
+                for member in gb['members']:
+                    blocked.update(separations.get(member, ()))
                 ga['members'].extend(gb['members'])
                 ga['builds']+=gb['builds']+int(build and not dup)
                 removed.add(gb['id'])
@@ -183,6 +233,11 @@ def audit(source,items,groups,decisions,candidates,args,out):
             filtered.append(pair)
         candidates=filtered
     log['speaker_detection'] = audit_speaker_frames(source, groups, by_id, args, decode, log['ocr_enabled'])
+    if log['ocr_enabled']:
+        log['ocr_new_representatives'] += read_new_representatives(groups, 'final selection')
+        results = [item['ocr'] for item in items if 'ocr' in item]
+        log['ocr_images'] = len(results)
+        log['ocr_errors'] = sum(result['status'] != 'ok' for result in results)
     # These flags describe actual source quality. They never imply upscaling can
     # recreate missing letters. Missing OCR is explicit, not a silent pass.
     for group in groups:
