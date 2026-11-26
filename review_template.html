@@ -14,21 +14,18 @@
     </div>
     <div class="topbar">
       <div><h1>Review slides</h1><div id="stats"></div></div>
-      <div class="export-area">
-        <button id="export" class="primary" hidden>Export slides</button>
-        <a id="download" class="download-link" hidden>Download export ZIP</a>
-      </div>
     </div>
-    <nav class="tabs" aria-label="Review views">
-      <button id="compare-tab" aria-pressed="true">Compare pairs <span id="pair-count" class="tab-count"></span></button>
-      <button id="issues-tab" aria-pressed="false">Slide issues <span id="issue-count" class="tab-count"></span></button>
-      <button id="slides-tab" aria-pressed="false">All slides</button>
+    <nav class="workflow" aria-label="Review workflow">
+      <button id="compare-tab"><span class="step-number" aria-hidden="true">1</span><span>Compare pairs <small id="pair-count"></small></span></button>
+      <button id="issues-tab"><span class="step-number" aria-hidden="true">2</span><span>Slide issues <small id="issue-count"></small></span></button>
+      <button id="slides-tab"><span class="step-number" aria-hidden="true">3</span><span>Review deck <small id="deck-count"></small></span></button>
+      <button id="export-tab"><span class="step-number" aria-hidden="true">4</span><span>Export <small id="export-step-status"></small></span></button>
     </nav>
     <p id="status" class="notice" role="status" aria-live="polite"></p>
   </header>
   <main class="review-main review-shell shell">
     <details id="errors" hidden><summary></summary><pre></pre></details>
-    <section id="comparison-view" class="pair-shell glass" aria-label="Compare possible matches">
+    <section id="comparison-view" class="pair-shell glass" aria-label="Compare possible matches" hidden>
       <div id="pair-header" class="pair-header">
         <div><h2 id="pair-title"></h2><p id="pair-reason"></p></div>
         <div class="pair-nav">
@@ -46,14 +43,56 @@
       <p id="pair-help" class="pair-help">For a slide build, keep the capture with all the content. Keep both if either one has unique content.</p>
       <div id="comparison-empty" class="compare-empty" hidden>
         <h2>No pairs left to compare</h2>
-        <button id="open-issues">Check slide issues</button>
+        <p>Continue to check individual slides for quality issues.</p>
       </div>
       <div class="pair-actions"><button id="undo-pair" hidden>Undo last pair decision</button></div>
     </section>
+    <section id="issue-view" class="pair-shell glass" aria-label="Check flagged slides" hidden>
+      <div id="issue-content">
+        <div class="pair-header">
+          <div><h2 id="issue-title" tabindex="-1"></h2><p id="issue-source"></p></div>
+          <div class="pair-nav">
+            <button id="previous-issue" aria-label="Previous issue">Previous</button>
+            <select id="issue-picker" aria-label="Jump to issue"></select>
+            <button id="next-issue" aria-label="Next issue">Next</button>
+          </div>
+        </div>
+        <div class="issue-layout">
+          <div class="issue-image">
+            <button id="issue-preview" class="preview-button" aria-label="Enlarge flagged slide"><img alt="Flagged slide"></button>
+            <p id="issue-size" class="file"></p>
+          </div>
+          <aside class="issue-inspector" aria-label="Slide quality controls">
+            <h3>What to check</h3>
+            <ul id="issue-reasons"></ul>
+            <div class="issue-actions">
+              <button id="issue-check" class="primary">Mark checked and next</button>
+              <button id="issue-crop">Adjust crop</button>
+              <button id="issue-exclude" class="quiet">Exclude slide</button>
+            </div>
+            <details id="issue-alternates" hidden>
+              <summary id="alternate-title"></summary>
+              <div id="issue-members" class="members"></div>
+            </details>
+            <details id="issue-ocr" hidden><summary>Read extracted text</summary><pre></pre></details>
+          </aside>
+        </div>
+      </div>
+      <div id="issue-empty" class="compare-empty" hidden>
+        <h2>No slide issues left to check</h2>
+        <p>Continue to review the slides in export order.</p>
+      </div>
+      <div class="pair-actions"><button id="undo-issue" hidden>Undo last issue decision</button></div>
+    </section>
     <section id="slide-view" hidden aria-label="Browse slides">
+      <div class="deck-heading">
+        <h2 id="deck-title" tabindex="-1">Review the deck</h2>
+        <p>Check the included slides in the order they’ll appear in the ZIP.</p>
+      </div>
       <div class="controls toolbar glass">
         <select id="filter" aria-label="Group filter">
-          <option value="review">Slide issues</option><option value="all">All slides</option>
+          <option value="included">Included in export</option><option value="all">All slides</option>
+          <option value="review">Slide issues</option>
           <option value="ready">Ready</option><option value="excluded">Excluded</option>
           <option value="multi">Multiple captures</option><option value="full">Full-frame captures</option>
         </select>
@@ -69,6 +108,21 @@
       </div>
       <div id="grid" class="grid"></div>
     </section>
+    <section id="export-view" class="export-panel glass" aria-labelledby="export-title" hidden>
+      <h2 id="export-title" tabindex="-1">Export reviewed slides</h2>
+      <p id="export-summary"></p>
+      <p id="export-description">Your ZIP includes slide images, original captures, extracted text, and a CSV mapping.</p>
+      <div class="export-area">
+        <button id="export" class="primary" hidden>Export slides</button>
+        <a id="download" class="download-link" hidden>Download export ZIP</a>
+      </div>
+      <p id="export-offline" hidden>Open this batch in the local app to save a ZIP.</p>
+    </section>
+    <footer class="workflow-footer glass">
+      <button id="back-step" hidden>Back</button>
+      <p id="step-hint"></p>
+      <button id="continue-step" class="primary">Continue</button>
+    </footer>
   </main>
   <div id="lightbox" class="overlay" role="dialog" aria-label="Enlarged slide">
     <img alt="Native-resolution slide"><div id="caption"></div><button>Close (Esc)</button>
@@ -82,6 +136,7 @@
       <label>Right %<br><input id="cx2" type="number" min="0" max="100" step="0.1"></label>
       <label>Bottom %<br><input id="cy2" type="number" min="0" max="100" step="0.1"></label>
     </div>
+    <p id="crop-error" role="alert" class="error" hidden></p>
     <div><button id="applycrop">Apply crop</button><button id="cancelcrop">Cancel</button></div>
   </div>
   <script>const data=__MANIFEST__;</script>

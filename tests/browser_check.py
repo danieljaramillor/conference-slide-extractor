@@ -6,6 +6,15 @@ import sys
 from playwright.sync_api import sync_playwright
 
 
+def clear_queues(page):
+    while page.locator('#keep-both').is_visible():
+        page.locator('#keep-both').click()
+    if page.locator('#comparison-view').is_visible():
+        page.locator('#continue-step').click()
+    while page.locator('#issue-check').is_visible():
+        page.locator('#issue-check').click()
+
+
 def check(report_path):
     report_path = Path(report_path).resolve()
     with sync_playwright() as p:
@@ -15,12 +24,13 @@ def check(report_path):
         page.on('pageerror',lambda error: errors.append(str(error)))
         page.goto(report_path.as_uri())
         page.wait_for_function("typeof groups !== 'undefined'")
+        clear_queues(page)
         page.locator('#slides-tab').click()
         page.locator('#filter').select_option('all')
         page.wait_for_selector('.card')
         count = page.locator('.card').count()
         assert count > 1
-        page.locator('[data-zoom]').first.click()
+        page.locator('#grid [data-zoom]').first.click()
         assert page.locator('#lightbox').is_visible()
         page.keyboard.press('Escape')
         assert not page.locator('#lightbox').is_visible()
@@ -56,6 +66,7 @@ def check(report_path):
         page.wait_for_function("document.getElementById('status').textContent==='Decisions loaded'")
         page.reload()
         page.wait_for_function("typeof groups !== 'undefined' && groups[0].excluded === true")
+        clear_queues(page)
         page.locator('#slides-tab').click()
         page.locator('#filter').select_option('all')
         page.locator('#search').fill('no-such-file-123456789')

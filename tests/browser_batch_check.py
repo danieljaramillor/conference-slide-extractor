@@ -56,9 +56,11 @@ def check(program, python, fixture, screenshot):
                 page.locator('#slides-tab').click()
                 page.locator('#filter').select_option('all')
                 page.wait_for_function("document.querySelectorAll('.card').length === 4", timeout=8000)
-                page.locator('[data-zoom]').first.click()
+                page.locator('#grid [data-zoom]').first.click()
                 page.wait_for_function("document.querySelector('#lightbox img').naturalWidth >= 1280")
                 page.keyboard.press('Escape')
+                assert page.locator('#export').is_hidden()
+                page.locator('#continue-step').click()
                 page.locator('#export').click()
                 page.get_by_role('link', name='Download export ZIP').wait_for(timeout=30_000)
                 with page.expect_download() as result:

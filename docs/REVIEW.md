@@ -11,9 +11,17 @@ The queue shows groups the app considered similar enough for a closer comparison
 | A chart, column, value, or panel is different and both captures contain unique information | **Keep both slides**. |
 | You cannot tell yet | Select **Next** or choose another pair from the dropdown. The skipped pair stays in the queue. |
 
-Pair decisions move you to the next unresolved suggestion and save to the batch. **Undo last pair decision** is available during the current review session. The **Slide issues** tab shows flagged crops, blur, unreadable text, and other issues that need inspection one slide at a time. **All slides** includes the complete batch and the **Excluded** filter. Use the capture list to choose a different image or split a capture out of its group.
+Pair decisions move you to the next unresolved suggestion and save to the batch. **Undo last pair decision** is available during the current review session. Once the pair queue is clear, continue to **Slide issues**.
 
-If a crop is wrong, select **Adjust crop**, drag around the slide, and apply it. Export refreshes OCR for changed crops and selected captures that lack text. The ZIP includes `slides/`, `originals/`, `text/`, and `mapping.csv`.
+## Check one flagged slide at a time
+
+In **Slide issues**, read **What to check** next to the current image. Click the image to enlarge it. Use **Adjust crop** to draw a better slide region, or **Choose another capture** if the group has a better screenshot. Use **Mark checked and next** to approve the current capture and move on. **Exclude slide** omits it from the ZIP. **Undo last issue decision** restores the last slide you marked or excluded in this session.
+
+After applying a crop, check the updated preview before approving it. Export refreshes OCR for changed crops and selected captures that lack text. The ZIP includes `slides/`, `originals/`, `text/`, and `mapping.csv`.
+
+## Review the deck
+
+Open **Review deck** when both queues are clear. The default view shows included slides in export order. You can search filenames, inspect alternate captures, split or merge groups, and restore captures through the **Excluded** filter. If an edit creates a new pair or slide issue, complete that check before exporting. Select **Continue to export** when the deck is ready.
 
 ## Choose where the ZIP goes
 

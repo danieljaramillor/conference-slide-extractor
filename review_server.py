@@ -110,7 +110,7 @@ def review_handler(directory):
                     self.end_headers()
                     shutil.copyfileobj(stream, self.wfile)
                 return
-            except (BrokenPipeError, ConnectionResetError):
+            except ConnectionError:
                 return
             except (ValueError,KeyError,OSError) as exc:
                 return self.respond({'error':str(exc)},status=400)

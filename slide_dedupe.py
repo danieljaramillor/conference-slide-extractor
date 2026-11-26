@@ -21,7 +21,7 @@ from PIL import Image, ImageOps
 from slide_regions import detect_region, extract, quality, recover_projected_screen
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.4.0'
+APP_VERSION = '2.5.0'
 cv2.setNumThreads(1)
 
 

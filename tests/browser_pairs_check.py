@@ -30,6 +30,8 @@ def check(directory, screenshot):
                 visible = page.locator('#compare-cards img')
                 page.wait_for_function('document.querySelectorAll("#compare-cards img").length === 2')
                 page.wait_for_function('Array.from(document.querySelectorAll("#compare-cards img")).every(img => img.naturalWidth > 1000)')
+                for step in ('issues-tab', 'slides-tab', 'export-tab'):
+                    assert page.locator('#'+step).is_disabled()
                 visible.first.click()
                 page.get_by_role('dialog', name='Enlarged slide').wait_for()
                 page.keyboard.press('Escape')
@@ -57,6 +59,14 @@ def check(directory, screenshot):
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert visible.count() == 2
+                while page.locator('#keep-both').is_visible():
+                    page.locator('#keep-both').click()
+                page.locator('#continue-step').click()
+                assert page.locator('#issues-tab').get_attribute('aria-current') == 'step'
+                page.locator('#issue-preview img').evaluate('(img) => img.decode()')
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.set_viewport_size({'width': 1400, 'height': 900})
+                page.screenshot(path=str(screenshot.with_stem(screenshot.stem+'-issues')))
                 assert not errors, errors
                 browser.close()
         finally:
@@ -64,7 +74,7 @@ def check(directory, screenshot):
             server.batches.close()
             server.server_close()
             thread.join()
-    print('Pair queue passed: native previews, navigation, keep both, keep right, undo, persistence, and mobile layout.')
+    print('Pair queue passed: native previews, navigation, keep both, keep right, undo, persistence, and guided handoff to issues.')
 
 
 if __name__ == '__main__':

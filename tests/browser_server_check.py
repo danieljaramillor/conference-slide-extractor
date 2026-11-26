@@ -38,19 +38,49 @@ def check(directory):
             ''')
             page.goto(base)
             page.wait_for_function("typeof groups !== 'undefined'")
+            assert page.locator('#slides-tab').get_attribute('aria-current') == 'step'
+            assert page.locator('#export-tab').is_disabled()
             page.locator('#slides-tab').click()
             page.locator('#filter').select_option('all')
-            page.locator('[data-zoom]').first.click()
+            page.locator('#grid [data-zoom]').first.click()
             page.wait_for_function("document.querySelector('#lightbox img').complete && document.querySelector('#lightbox img').naturalWidth>1000")
             page.keyboard.press('Escape')
-            page.locator('[data-crop]').first.click()
+            page.locator('#grid [data-crop]').first.click()
             page.wait_for_function("document.getElementById('cropsource').complete && document.getElementById('cropsource').naturalWidth>1000")
             page.locator('#cx1').fill('2');page.locator('#cy1').fill('2');page.locator('#cx2').fill('98');page.locator('#cy2').fill('98')
             page.locator('#applycrop').click()
             page.wait_for_function('Object.keys(crops).length===1')
+            assert page.locator('#continue-step').inner_text() == 'Return to slide issues'
+            assert page.locator('#export').is_hidden()
             page.wait_for_timeout(300)
             assert (root/'review-state.json').exists()
             page.reload();page.wait_for_function('Object.keys(crops).length===1')
+            assert page.locator('#issues-tab').get_attribute('aria-current') == 'step'
+            assert page.locator('#slides-tab').is_disabled()
+            assert page.locator('#export').is_hidden()
+            assert 'updated crop' in page.locator('#issue-reasons').inner_text()
+            assert '?crop=' in page.locator('#issue-preview img').get_attribute('src')
+            original_id = page.locator('#issue-preview').get_attribute('data-zoom')
+            if page.locator('#issue-alternates').is_visible():
+                page.locator('#alternate-title').click()
+                alternative = page.locator('#issue-members [data-rep]:not(:checked)').first
+                alternate_id = alternative.get_attribute('data-rep')
+                page.locator(f'#issue-members [data-rep="{alternate_id}"]').click()
+                assert page.locator('#issue-preview').get_attribute('data-zoom') == alternate_id
+                page.locator(f'#issue-members [data-rep="{original_id}"]').click()
+                assert '?crop=' in page.locator('#issue-preview img').get_attribute('src')
+            page.locator('#issue-exclude').click()
+            assert page.locator('#issue-empty').is_visible()
+            page.locator('#undo-issue').click()
+            assert page.locator('#issue-preview').is_visible()
+            page.locator('#issue-check').click()
+            assert page.locator('#issue-empty').is_visible()
+            page.locator('#continue-step').click()
+            assert page.locator('#slides-tab').get_attribute('aria-current') == 'step'
+            assert page.locator('#grid .card').count() == 4
+            titles = [title.strip() for title in page.locator('#grid .card h2').all_inner_texts()]
+            assert titles == [f'Slide {number}' for number in range(1, 5)], titles
+            page.locator('#continue-step').click()
             page.locator('#export').click()
             page.wait_for_function("document.getElementById('status').textContent === 'Export canceled.'")
             assert not list(root.glob('reviewed-*.zip'))
@@ -70,7 +100,7 @@ def check(directory):
                 second.shutdown();second.server_close();second.slide_source.close();second_thread.join()
             assert not errors,errors
             browser.close()
-        print('Browser server checks passed: native image, crop editor, persistent review, canceled and successful Save As; no JavaScript errors.')
+        print('Browser server checks passed: native image, crop editing, issue queue and undo, deck order, canceled and successful Save As.')
     finally:
         server.shutdown();server.server_close();server.slide_source.close();thread.join()
 
