@@ -19,9 +19,10 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from slide_regions import detect_region, extract, quality, recover_projected_screen
+from slide_transitions import EXCLUSION_REASON, mark_crossfades
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.6.0'
+APP_VERSION = '2.7.0'
 cv2.setNumThreads(1)
 
 
@@ -156,36 +157,6 @@ def better_frame(item, ref, metrics):
     return iq > rq
 
 
-def mark_crossfades(items):
-    """Detect a frame rendered as a blend of its chronological neighbors."""
-    timestamp = re.compile(r'^image_(\d\d)-(\d\d)-(\d\d)(?:\.[^.]+)$', re.IGNORECASE)
-    previous = None
-    following = None
-    for item in items:
-        path = Path(item['name'])
-        match = timestamp.fullmatch(path.name)
-        if not match:
-            previous = following = None
-            continue
-        hours, minutes, seconds = map(int, match.groups())
-        timecode = hours * 3600 + minutes * 60 + seconds
-        if previous and following and previous[0] == following[0] == path.parent:
-            if 0 < following[1] - previous[1] <= 10 and 0 < timecode - following[1] <= 10:
-                a = previous[2]['gray'].astype(np.float32) / 255
-                b = following[2]['gray'].astype(np.float32) / 255
-                c = item['gray'].astype(np.float32) / 255
-                delta = a - c
-                power = float(np.mean(delta * delta))
-                if power > .003:
-                    weight = float(np.mean((b - c) * delta) / power)
-                    if .15 <= weight <= .85:
-                        distance = min(float(np.abs(b - a).mean()), float(np.abs(b - c).mean()))
-                        residual = float(np.abs(b - (c + weight * delta)).mean())
-                        if distance > .010 and residual < min(.008, distance * .3):
-                            following[2]['crossfade'] = True
-        previous, following = following, (path.parent, timecode, item)
-
-
 def write_image(path, image):
     ok, data = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 88])
     if not ok:
@@ -223,14 +194,16 @@ def run(args):
     read_seconds = time.perf_counter() - start
     if not items:
         raise ValueError(f'No readable images. Errors: {errors[:3]}')
-    mark_crossfades(items)
+    transitions = mark_crossfades(items)
+    transition_ids = {item['id'] for item in transitions}
+    eligible = [item for item in items if item['id'] not in transition_ids]
     groups, decisions, candidates = [], [], []
-    by_id = {i['id']: i for i in items}
-    for pos, item in enumerate(items):
+    by_id = {i['id']: i for i in eligible}
+    for pos, item in enumerate(eligible):
         item['position'] = pos
-    descriptors = np.stack([i['descriptor'] for i in items])
+    descriptors = np.stack([i['descriptor'] for i in eligible])
     # Global lookup handles repeated slides even when filenames are not chronological.
-    for pos, item in enumerate(items):
+    for pos, item in enumerate(eligible):
         if not groups:
             groups.append({'id': 1, 'representative': item['id'], 'members': [item['id']], 'builds': 0})
             continue
@@ -266,7 +239,18 @@ def run(args):
         else:
             groups.append({'id': len(groups)+1, 'representative': item['id'], 'members': [item['id']], 'builds': 0})
     from slide_audit import audit
-    groups, candidates, audit_log = audit(source,items,groups,decisions,candidates,args,out)
+    groups, candidates, audit_log = audit(source,eligible,groups,decisions,candidates,args,out)
+    # Keep evidence and each original frame inspectable. Blends did not enter
+    # matching or OCR, so they could not bridge two distinct slides.
+    transition_exclusions = []
+    next_group = max(group['id'] for group in groups) + 1
+    for group_id, item in enumerate(transitions, next_group):
+        groups.append({'id': group_id, 'representative': item['id'], 'members': [item['id']],
+                       'builds': 0, 'excluded': True, 'auto_exclusion': 'transition',
+                       'needs_review': False, 'review_reasons': [EXCLUSION_REASON]})
+        transition_exclusions.append({'group': group_id, 'representative': item['id'],
+                                      **item['transition']})
+    audit_log['transition_detection'] = {'auto_excluded': transition_exclusions}
     # Reconcile suspicious pairs to final groups and retain the closest example per pair.
     owner = {m: g['id'] for g in groups for m in g['members']}
     unique_pairs = {}

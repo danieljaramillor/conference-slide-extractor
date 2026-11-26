@@ -10,7 +10,7 @@ import tempfile
 import threading
 import zipfile
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from review_server import build_server
@@ -137,5 +137,75 @@ def check(directory, *, browser_channel='chrome'):
     print('Speaker exclusion workflow passed: ambiguous review, clean ZIP, recovery, persistence, split, and mixed merge.')
 
 
+def check_transition_review(directory, *, browser_channel='chrome'):
+    with tempfile.TemporaryDirectory(prefix='review-transitions-', ignore_cleanup_errors=True) as temporary:
+        root = Path(temporary)
+        source = Path(directory)
+        shutil.copy2(source / 'manifest.json', root / 'manifest.json')
+        shutil.copytree(source / 'thumbs', root / 'thumbs')
+        manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+        transition = next(group for group in manifest['groups'] if group.get('auto_exclusion') == 'transition')
+        included = next(group for group in manifest['groups'] if not group.get('excluded'))
+        server = build_server(root)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(channel=browser_channel, headless=True)
+                page = browser.new_page(accept_downloads=True)
+                errors = []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.add_init_script('window.showSaveFilePicker = undefined;')
+                page.goto(f'http://127.0.0.1:{server.server_port}/')
+                expect(page.locator('#pair-count')).to_have_text('Complete')
+                while page.locator('#issue-check').is_visible():
+                    page.locator('#issue-check').click()
+                page.locator('#slides-tab').click()
+                page.get_by_role('button', name='Continue to export').click()
+                page.locator('#export').click()
+                with page.expect_download() as downloaded:
+                    page.get_by_role('link', name='Download export ZIP').click()
+                with zipfile.ZipFile(downloaded.value.path()) as archive:
+                    rows = list(csv.DictReader(io.StringIO(archive.read('mapping.csv').decode('utf-8-sig'))))
+                    expected = {image['name'] for image in manifest['images'] if image['id'] in (2, 4)}
+                    assert {row['selected_source'] for row in rows} == expected
+                page.locator('#back-step').click()
+                show_excluded = page.locator('#show-excluded')
+                show_excluded.click()
+                blend = page.locator(f'#group-{transition["id"]}')
+                expect(blend.locator('.info > .badge')).to_have_text('Blended transition')
+                blend.get_by_role('button', name='Restore to deck').click()
+                page.get_by_role('button', name='Return to slide issues').click()
+                expect(page.locator('#issue-reasons')).to_contain_text('overlap between two slides')
+                page.get_by_role('button', name='Exclude slide').click()
+                page.get_by_role('button', name='Continue to deck review').click()
+                page.locator('#filter').select_option('all')
+                for group in (transition, included):
+                    page.locator(f'#grid [data-select="{group["id"]}"]').check()
+                with page.expect_response(lambda response: response.url.endswith('/decisions') and response.ok):
+                    page.locator('#merge').click()
+                decisions = json.loads((root / 'review-state.json').read_text(encoding='utf-8'))
+                merged = next(group for group in decisions['groups'] if transition['representative'] in group['members'])
+                assert merged['representative'] == included['representative'] and not merged.get('excluded')
+                merged_card = page.locator(f'#group-{merged["id"]}')
+                merged_card.locator('summary').filter(has_text='Inspect captures').click()
+                with page.expect_response(lambda response: response.url.endswith('/decisions') and response.ok):
+                    merged_card.locator(f'[data-split="{transition["representative"]}"]').click()
+                decisions = json.loads((root / 'review-state.json').read_text(encoding='utf-8'))
+                split = next(group for group in decisions['groups'] if group['representative'] == transition['representative'])
+                assert split['excluded'] and split['auto_exclusion'] == 'transition'
+                assert not errors, errors
+                browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            server.slide_source.close()
+            thread.join()
+    print('Transition review passed: label, intentional restore, merge safeguards, and excluded split.')
+
+
 if __name__ == '__main__':
-    check(sys.argv[1])
+    if '--transitions' in sys.argv:
+        check_transition_review(sys.argv[1])
+    else:
+        check(sys.argv[1])

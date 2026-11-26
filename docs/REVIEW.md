@@ -23,7 +23,9 @@ After applying a crop, check the updated preview before approving it. Export ref
 
 Open **Review deck** when both queues are clear. The default view shows included slides in export order. You can search filenames, inspect alternate captures, split or merge groups, and restore captures through the **Excluded** filter. If an edit creates a new pair or slide issue, complete that check before exporting. Select **Continue to export** when the deck is ready.
 
-Choose **Review excluded captures** to inspect automatic speaker-only exclusions and manual exclusions. A screenshot with a readable slide can be restored with **Restore to deck**. A restored automatic exclusion returns to **Slide issues** so you can verify the chosen capture before export.
+Choose **Review excluded captures** to inspect blended transitions, likely speaker-only captures, and manual exclusions. A screenshot with a readable slide can be restored with **Restore to deck**. A restored automatic exclusion returns to **Slide issues** so you can verify the chosen capture before export.
+
+The transition check uses nearby captures to distinguish a short overlap between two slides from a legitimate build. Keep capture order in the filenames. The detector accepts timestamps such as `image_00-10-24.png` and consecutive names such as `frame_102.png`.
 
 ## Choose where the ZIP goes
 

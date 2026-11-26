@@ -2,7 +2,7 @@
 
 Turn a ZIP of conference screenshots into readable slide images and text. The Windows app detects slide regions, groups repeat captures, and opens possible duplicates and slide builds side by side for review. Processing and OCR run on your computer.
 
-The app excludes clear speaker-only camera shots from the slide export. **Slide issues** flags uncertain captures, and **Review excluded captures** lets an operator inspect and restore an automatic exclusion.
+The app excludes clear speaker-only camera shots and blends between slides from the slide export. **Slide issues** flags uncertain captures, and **Review excluded captures** lets an operator inspect and restore an automatic exclusion.
 
 ## Install on Windows
 
@@ -42,4 +42,4 @@ For a job runner, scan an already complete archive directly. Use a fresh output 
 .\ConferenceSlideExtractor-Windows-x64.exe scan 'D:\Incoming\session.zip' --output 'D:\Results\session-001'
 ```
 
-See [review and troubleshooting](docs/REVIEW.md), [build instructions](docs/BUILD.md), [speaker exclusion QC](docs/SPEAKER-QC.md), [reveal and capture QC](docs/REVEAL-QC.md), and the [scaling plan](SCALING.md).
+See [review and troubleshooting](docs/REVIEW.md), [transition and build QC](docs/TRANSITION-QC.md), [speaker exclusion QC](docs/SPEAKER-QC.md), [build instructions](docs/BUILD.md), and the [scaling plan](SCALING.md).

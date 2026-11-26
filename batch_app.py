@@ -45,6 +45,8 @@ class Batches:
         if speaker := audit.get('speaker_detection'):
             summary['speaker_check'] = speaker['status']
             summary['speaker_excluded'] = len(speaker['auto_excluded'])
+        if transitions := audit.get('transition_detection'):
+            summary['transitions_excluded'] = len(transitions.get('auto_excluded', ()))
         return summary
 
     def write_status(self, job, status):
