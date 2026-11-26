@@ -37,6 +37,19 @@ def check(program, python, fixture, screenshot, browser_channel='chrome'):
                 page.route('**/*', allow_loopback)
                 page.add_init_script('window.showSaveFilePicker = undefined;')
                 page.goto(url)
+                guide = page.get_by_role('dialog', name='Extract your first slides')
+                guide.wait_for()
+                with page.expect_response(lambda response: response.url.endswith('/quick-start/seen') and response.ok):
+                    guide.get_by_role('button', name='Use practice ZIP').click()
+                assert page.locator('#file-name').inner_text() == 'Practice session.zip'
+                page.reload()
+                assert not guide.is_visible()
+                page.get_by_role('button', name='Quick start').click()
+                guide.wait_for()
+                page.keyboard.press('Escape')
+                guide.wait_for(state='hidden')
+                server_guide = page.request.get(url + 'server-guide')
+                assert server_guide.ok and 'run-inbox' in server_guide.text()
                 page.locator('#archive').set_input_files({'name': 'invalid.zip', 'mimeType': 'application/zip',
                                                          'buffer': b'invalid archive'})
                 page.locator('#start').click()

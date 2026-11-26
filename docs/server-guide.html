@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Windows server setup · Conference Slide Extractor</title>
+<style>
+body{font:16px/1.55 "Segoe UI",system-ui,sans-serif;color:#1d2637;margin:0;background:#f6f7fb}
+main{max-width:750px;margin:auto;padding:32px clamp(16px,4vw,48px) 64px;background:white}
+h1,h2{line-height:1.22} h2{margin-top:1.7em} p,ol{margin:.7em 0}
+code,pre{font-family:Consolas,monospace;background:#f0f2f7} pre{padding:14px;overflow:auto;border-left:3px solid #616db4}
+td,th{padding:6px 12px;border-bottom:1px solid #dce0e8;text-align:left;vertical-align:top}
+</style></head><body><main>
+<h1>Run the extractor on a Windows server</h1>
+<p>One Windows x64 executable handles setup, scanning, and review. Unattended scans run without a browser or internet connection. Use a browser on the server when you want to review a deck.</p>
+<h2>1. Prepare the folders</h2>
+<p>Copy the EXE to a stable folder on the processing machine. Give the account that will run the jobs read and execute access to the EXE, and write access to its temporary directory and the data folder. In PowerShell, set these two paths to your locations.</p>
+<pre>$exe = 'C:\SlideTools\ConferenceSlideExtractor-Windows-x64.exe'
+$data = 'C:\SlideData'
+&amp; $exe init-server $data</pre>
+<p>Setup creates <code>inbox</code> and <code>runs</code> and places a practice ZIP and a copy of this guide in the data folder. Rerunning setup keeps existing batches.</p>
+<h2>2. Try one batch</h2>
+<pre>Copy-Item "$data\practice.zip" "$data\inbox\practice.part"
+Rename-Item "$data\inbox\practice.part" 'practice.zip'
+&amp; $exe run-inbox $data
+$LASTEXITCODE</pre>
+<p>Look for <strong>Ready for review</strong> and exit code <strong>0</strong>. Open the printed result folder. The practice run should have two PNGs in <code>selected\slides</code> and two lines of recognized slide text in <code>selected\slides.jsonl</code>, one record per slide. Run the command again with an empty inbox. It should report zero batches.</p>
+<h2>3. Automate incoming ZIPs</h2>
+<p>Have the upstream step write each complete session as a uniquely named <code>.part</code> file in <code>inbox</code>, close it, then rename it to <code>.zip</code> in that same folder. The runner takes ownership of each ZIP and retains it under <code>runs\&lt;job&gt;\input</code>. Keeping this original in place lets reviewers open native images later.</p>
+<p>In Windows Task Scheduler, select <strong>Create Task</strong>. Choose the account with access to both paths. To process jobs while signed out, select <strong>Run whether user is logged on or not</strong>.</p>
+<table><tr><th>Setting</th><th>Example</th></tr>
+<tr><td>Trigger</td><td>Daily, repeat every 5 minutes for 1 day.</td></tr>
+<tr><td>Action</td><td>Start a program</td></tr>
+<tr><td>Program/script</td><td><code>C:\SlideTools\ConferenceSlideExtractor-Windows-x64.exe</code></td></tr>
+<tr><td>Add arguments</td><td><code>run-inbox "C:\SlideData"</code></td></tr>
+<tr><td>If already running</td><td>Do not start a new instance</td></tr></table>
+<p>Run the task once under the selected account and check Last Run Result. Each invocation processes waiting ZIPs sequentially and exits. Files delivered later wait for the next invocation.</p>
+<h2>4. Review results and handle exceptions</h2>
+<ul><li><strong>Completed scan.</strong> Use <code>runs\&lt;job&gt;\result\manifest.json</code> as the completion signal. Read <code>errors</code>, <code>audit.ocr_errors</code>, <code>stats.needs_review</code>, and <code>stats.review_pairs</code> before using the automatic selection. The scan output is a draft for review.</li>
+<li><strong>Operator review.</strong> Use the result path printed by the runner in the command below. Review flagged slides and export the approved ZIP from the browser. On a remote machine, open the browser in your remote desktop session.</li></ul>
+<pre>&amp; $exe serve 'C:\SlideData\runs\YOUR-JOB\result' --open</pre>
+<ul><li><strong>Failed job.</strong> A nonzero exit code signals a batch or setup failure. Check the console and the job's <code>failed.txt</code> and <code>processing.log</code>. Other queued ZIPs can still finish. After fixing the cause, copy a corrected ZIP into the inbox using the same two-step handoff. The failed attempt stays available.</li>
+<li><strong>Interrupted run.</strong> Start the same runner again. It resumes claimed ZIPs, preserves unfinished results in <code>interrupted-*</code>, and skips completed and already failed jobs.</li></ul>
+</main></body></html>

@@ -2,6 +2,7 @@
 __pycache__/
 output/
 *.zip
+!assets/practice.zip
 sample-*
 .cache/
 batches/

@@ -2,6 +2,7 @@
 import argparse
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,46 @@ from presenter_fixtures import SLIDE_BOUNDS, presenter_annotation_sequence, pres
 from scan_integrity_check import check as check_integrity
 from speaker_fixtures import camera_capture
 from transition_fixtures import build_transition_sequence, one_sided_sequence, timestamped
+
+
+def check_inbox(executable, root):
+    workspace = root / 'server work'
+
+    def command(name, expected_code=0):
+        run = subprocess.run([str(executable), name, str(workspace)], cwd=root, capture_output=True,
+                             text=True, encoding='utf-8', timeout=120)
+        assert run.returncode == expected_code, (run.stdout, run.stderr)
+        return run.stdout
+
+    command('init-server')
+    assert 'Task Scheduler' in (workspace / 'server-guide.html').read_text(encoding='utf-8')
+    inbox, runs = workspace / 'inbox', workspace / 'runs'
+    shutil.copyfile(workspace / 'practice.zip', inbox / 'still-copying.part')
+    assert 'Processed 0 batch(es)' in command('run-inbox')
+    (inbox / 'still-copying.part').rename(inbox / 'practice.zip')
+    (inbox / 'bad.zip').write_bytes(b'broken')
+    output = command('run-inbox', expected_code=1)
+    assert 'Processed 2 batch(es); 1 failed.' in output
+    failure, = runs.glob('*/failed.txt')
+    assert (failure.parent / 'input/bad.zip').is_file()
+    manifest_file, = runs.glob('*/result/manifest.json')
+    manifest = json.loads(manifest_file.read_text(encoding='utf-8'))
+    assert Path(manifest['source']).is_file()
+    assert manifest['stats']['processed'] == 3 and manifest['stats']['selected'] == 2
+    records = (manifest_file.parent / 'selected/slides.jsonl').read_text(encoding='utf-8').splitlines()
+    assert len(records) == 2
+    for line, expected in zip(records, ('How captures become slides', 'What is in the export')):
+        record = json.loads(line)
+        assert record['ocr_status'] == 'ok' and expected.lower() in record['text'].lower(), record
+    assert 'Processed 0 batch(es)' in command('run-inbox')
+    # A job already moved from the inbox, interrupted before the manifest was published.
+    interrupted = runs / 'interrupted-test'
+    (interrupted / 'input').mkdir(parents=True)
+    shutil.copyfile(workspace / 'practice.zip', interrupted / 'input/practice.zip')
+    (interrupted / 'result').mkdir()
+    (interrupted / 'result/partial.log').touch()
+    assert 'Processed 1 batch(es); 0 failed.' in command('run-inbox')
+    assert (interrupted / 'result/manifest.json').is_file() and list(interrupted.glob('interrupted-*/partial.log'))
 
 
 def scan_captures(executable, root, stem, cases):
@@ -149,6 +190,7 @@ def check_tiny_numeric_change(executable, root):
 def check(executable, browser=False):
     with tempfile.TemporaryDirectory(prefix='slide-exe-check-') as directory:
         root = Path(directory)
+        check_inbox(executable, root)
         cases = [(f'{name}.png', image) for name, image, _ in fixtures()]
         cases.append(('speaker-only.png', camera_capture()))
         archive, output, manifest = scan_captures(executable, root, 'example', cases)

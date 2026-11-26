@@ -12,7 +12,8 @@ When a slide reveals more information, the app looks for the capture that contai
 
 1. Open [GitHub Releases](https://github.com/danieljaramillor/conference-slide-extractor/releases/latest). Sign in with an account that has access to this repository.
 2. Under **Assets**, download **ConferenceSlideExtractor-Windows-x64.exe**. Save it somewhere you can find it again, such as Downloads or a team tools folder.
-3. Double-click the `.exe`. The app opens in your default browser. Keep the app window open while it processes or exports a batch.
+3. Double-click the `.exe`. Leave the small **Conference Slide Extractor** window open while you work in your browser. **Open extractor** brings the dashboard back. **Quit** stops the app.
+4. The **Extract your first slides** guide opens automatically. Select **Use practice ZIP**, then **Extract slides**. Three included screenshots become two slides. Select **Review slides** to inspect and export them. Open **Quick start** on the dashboard anytime, or use **Choose my ZIP** for your own session.
 
 The executable bundles Python, the OCR models, and their dependencies. It runs without an installer, API key, paid service, or GPU. The release executable is unsigned. Your organization’s device policy may require approval to run it. You can verify the download against `SHA256SUMS.txt` on the release page.
 
@@ -41,6 +42,16 @@ The app stores per-batch inputs, results, review decisions, logs, and OCR cache 
 All review traffic stays on the computer running the app. The browser connects to the app’s local address. Pillow, OpenCV, and NumPy decode, locate, and compare slides. RapidOCR uses bundled PP-OCRv6 neural models and ONNX Runtime on the CPU. OpenCV uses the bundled YuNet model with slide and text checks to detect speaker-only captures. [YuNet model and license](assets/yunet/README.md)
 
 ## Windows server and automation
+
+Copy the same executable to a Windows x64 server. Choose a stable folder writable by the job account. Setup includes an offline guide and a practice batch. Change paths to match your machine:
+
+```powershell
+$exe = 'C:\SlideTools\ConferenceSlideExtractor-Windows-x64.exe'
+& $exe init-server 'C:\SlideData'
+& $exe run-inbox 'C:\SlideData'
+```
+
+Deliver finished ZIPs into `C:\SlideData\inbox` by renaming a closed `.part` file to `.zip`. The runner retains the originals, processes one at a time, and saves each scan under `runs\<job>\result`. Use **Server setup** in the dashboard or open `C:\SlideData\server-guide.html` for a practice run, Task Scheduler settings, error recovery, and the operator review step. A scan produces an automatic selection. Review the flagged content before distributing a deck.
 
 Use the same `.exe` on a Windows x64 processing machine. A remote operator can use an approved remote desktop connection or forward the loopback port through SSH. Start with one batch and verify the server’s storage permissions, browser access, and OCR before moving live work.
 

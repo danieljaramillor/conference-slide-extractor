@@ -9,7 +9,10 @@
 <body>
   <header class="site-bar shell">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Conference Slide Extractor</div>
-    <span class="status-chip">Local processing</span>
+    <nav class="dashboard-help" aria-label="Help">
+      <button id="show-guide" type="button">Quick start</button>
+      <a href="/server-guide" target="_blank" rel="noopener">Server setup</a>
+    </nav>
   </header>
   <main class="dashboard-main shell">
     <section class="intake-panel glass" aria-labelledby="new-title">
@@ -34,6 +37,21 @@
       <div id="jobs" class="jobs-list"><p class="empty-jobs">Loading batches…</p></div>
     </section>
   </main>
+  <dialog id="quick-start" aria-labelledby="guide-title">
+    <h2 id="guide-title">Extract your first slides</h2>
+    <ol class="guide-steps">
+      <li><strong>Choose a screenshot ZIP</strong><p>Use one conference session per ZIP. Keep the captures in order with numbered filenames or timestamps.</p></li>
+      <li><strong>Select Extract slides</strong><p>Follow progress under Batches. The extractor groups repeat captures and reads the slide text on this computer.</p></li>
+      <li><strong>Review and export</strong><p>Open Review slides. Compare flagged captures, check the deck, then export the ZIP with slide images and text.</p></li>
+    </ol>
+    <p class="guide-note">Try the practice ZIP for a first run. Its three screenshots include one repeat.</p>
+    <p id="guide-error" role="status" hidden></p>
+    <div class="guide-actions">
+      <button id="practice" type="button" class="primary">Use practice ZIP</button>
+      <button id="use-own" type="button">Choose my ZIP</button>
+      <button id="dismiss-guide" type="button">Close guide</button>
+    </div>
+  </dialog>
   <script>
     const token = '__UPLOAD_TOKEN__';
     const archive = document.getElementById('archive');
@@ -46,6 +64,48 @@
     let busy = true;
     let uploading = false;
     let lastSnapshot;
+    const guide = document.getElementById('quick-start');
+    const guideError = document.getElementById('guide-error');
+    const helpButton = document.getElementById('show-guide');
+
+    function openGuide() {
+      guideError.hidden = true;
+      guide.showModal();
+    }
+    helpButton.addEventListener('click', openGuide);
+    document.getElementById('dismiss-guide').addEventListener('click', () => guide.close());
+    guide.addEventListener('close', async () => {
+      try {
+        const response = await fetch('/quick-start/seen', { method: 'POST', headers: { 'X-Batch-Token': token } });
+        if (!response.ok) throw new Error();
+      } catch {
+        message('Your tutorial preference could not be saved. The guide may appear again.', true);
+      }
+    });
+    document.getElementById('use-own').addEventListener('click', () => {
+      guide.close();
+      archive.click();
+    });
+    document.getElementById('practice').addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const response = await fetch('/practice.zip');
+        if (!response.ok) throw new Error();
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([await response.blob()], 'Practice session.zip', {type: 'application/zip'}));
+        archive.files = transfer.files;
+        updateSelection();
+        guide.close();
+        message('Practice ZIP selected. Choose Extract slides to start.');
+        start.focus();
+      } catch {
+        guideError.textContent = 'Could not load the practice ZIP. Try again or choose your own ZIP.';
+        guideError.hidden = false;
+      } finally {
+        button.disabled = false;
+      }
+    });
 
     function message(text, isError = false) {
       status.hidden = !text;
@@ -192,6 +252,7 @@
       request.send(file);
     });
     refresh();
+    if (__FIRST_RUN__) openGuide();
     setInterval(refresh, 2000);
   </script>
 </body>

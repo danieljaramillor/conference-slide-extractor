@@ -1,7 +1,7 @@
-# Conference Slide Extractor 2.15.0
+# Conference Slide Extractor 2.16.0
 
-- Reads survival-chart risk, censoring, and event counts from separate cells aligned to the chart's time axis.
-- Exports recovered counts and their source coordinates in `slides.jsonl`. Uncertain counts stay blank and include review coordinates.
-- Rescan a ZIP or export a reviewed deck again to generate the updated tables.
+- Double-click the Windows executable to open a small launcher and a first-run walkthrough in your browser.
+- Try an included three-capture ZIP, review the two selected slides, and export the result. Reopen the walkthrough from **Quick start**.
+- Use the same executable for scheduled Windows jobs. `init-server` prepares a folder and an offline setup guide. `run-inbox` processes finished ZIPs and retains originals and logs for review.
 
 Download `ConferenceSlideExtractor-Windows-x64.exe` under **Assets** and double-click it. See the repository README for storage, Windows Server, and command-line use. Use `SHA256SUMS.txt` to verify the download. The Windows executable is unsigned.

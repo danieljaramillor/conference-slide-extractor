@@ -12,12 +12,18 @@ def main():
         sys.stderr.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)
     args = sys.argv[1:]
     local_app_data = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData' / 'Local')
+    if args and args[0] in {'init-server', 'run-inbox'}:
+        from server_workflow import main as workflow
+        return workflow(args)
     if args and args[0] in {'scan', 'serve', 'export'}:
         import slide_dedupe
 
         if args[0] == 'scan' and not any(arg == '--ocr-cache' or arg.startswith('--ocr-cache=') for arg in args):
             args += ['--ocr-cache', str(local_app_data / 'Conference Slide Extractor' / 'ocr-cache')]
         slide_dedupe.main(args)
+    elif not args and sys.platform == 'win32' and getattr(sys, 'frozen', False):
+        from desktop_window import launch
+        return launch(local_app_data / 'Conference Slide Extractor' / 'batches')
     else:
         from batch_app import main as run_browser_app
 
@@ -26,7 +32,7 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        raise SystemExit(main())
     except (ValueError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
         print(f'Error: {exc}', file=sys.stderr, flush=True)
         if len(sys.argv) == 1 and sys.stdin and sys.stdin.isatty():
