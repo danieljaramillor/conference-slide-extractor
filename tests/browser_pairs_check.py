@@ -1,22 +1,29 @@
-"""Verify that the pair actions save, keep the chosen capture, and undo safely."""
+"""Verify grouped pilot review navigation, persistence, and the guided handoff."""
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import threading
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from batch_app import build_app
 
 
 def check(directory, screenshot):
-    # Copy only the metadata. This leaves the pilot review and decisions untouched.
+    # Copy the manifest and representative thumbnails into a disposable review.
     with tempfile.TemporaryDirectory(prefix='pair-review-') as temporary:
         output = Path(temporary)
         source = Path(directory).resolve()
         (output / 'manifest.json').write_bytes((source / 'manifest.json').read_bytes())
+        manifest = json.loads((output / 'manifest.json').read_text(encoding='utf-8'))
+        thumbs = output / 'thumbs'
+        thumbs.mkdir()
+        for group in manifest['groups']:
+            thumbnail = f'{group["representative"]}.jpg'
+            shutil.copy2(source / 'thumbs' / thumbnail, thumbs / thumbnail)
         server = build_app(output / 'jobs', existing=output)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -37,8 +44,9 @@ def check(directory, screenshot):
                 page.keyboard.press('Escape')
                 original_count = page.evaluate('pairs().length')
                 initial = page.evaluate('groups.length')
+                picker = page.locator('#pair-picker')
                 page.locator('#next-pair').click()
-                assert page.locator('#pair-picker').input_value() == '1'
+                expect(picker).to_have_value('1')
                 page.locator('#previous-pair').click()
                 page.screenshot(path=str(screenshot))
                 with page.expect_response(lambda r: r.url.endswith('/decisions') and r.ok):
@@ -49,12 +57,11 @@ def check(directory, screenshot):
                 assert state['resolved_pairs']
                 page.reload()
                 page.wait_for_function(f"typeof pairs === 'function' && pairs().length === {original_count - 1}")
-                expected = page.evaluate('pairs()[0].right.representative')
                 with page.expect_response(lambda r: r.url.endswith('/decisions') and r.ok):
-                    page.locator('#keep-right').click()
-                assert page.evaluate('groups.length') == initial - 1
-                assert page.evaluate(f'owner({expected}).representative') == expected
+                    page.locator('#keep-both').click()
+                assert page.evaluate('pairs().length') == original_count - 2
                 page.locator('#undo-pair').click()
+                assert page.evaluate('pairs().length') == original_count - 1
                 assert page.evaluate('groups.length') == initial
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -74,7 +81,7 @@ def check(directory, screenshot):
             server.batches.close()
             server.server_close()
             thread.join()
-    print('Pair queue passed: native previews, navigation, keep both, keep right, undo, persistence, and guided handoff to issues.')
+    print('Grouped pilot review passed with native previews, navigation, keep both, undo, persistence and handoff to issues.')
 
 
 if __name__ == '__main__':

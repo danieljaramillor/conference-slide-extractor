@@ -37,6 +37,18 @@ class ReviewServerTests(unittest.TestCase):
                 np.testing.assert_array_equal(native,image)
                 crop=cv2.imdecode(np.frombuffer(urllib.request.urlopen(base+'/native/0.png?crop=0.1,0.2,0.9,0.8').read(),np.uint8),1)
                 np.testing.assert_array_equal(crop,image[216:864,192:1728])
+                same=json.load(urllib.request.urlopen(base+'/comparison?a=0&b=0'))
+                self.assertEqual(same['relationship'],'same-content')
+                changes=json.load(urllib.request.urlopen(base+'/comparison?a=0&b=1'))
+                self.assertTrue(changes['regions']['left'])
+                self.assertTrue(changes['regions']['right'])
+                different_geometry=json.load(urllib.request.urlopen(base+'/comparison?a=0&b=0&crop_a=0,0,0.5,1'))
+                self.assertEqual(different_geometry['status'],'uncertain')
+                self.assertFalse(different_geometry['regions']['left'])
+                for query in ('a=0', 'a=0&a=1&b=1', 'a=0&b=9', 'a=0&b=1&crop_b=nan,0,1,1'):
+                    with self.subTest(query=query), self.assertRaises(urllib.error.HTTPError) as bad_comparison:
+                        urllib.request.urlopen(base+'/comparison?'+query)
+                    self.assertEqual(bad_comparison.exception.code,400)
                 decision={'source':m['source'],'manifest_id':m['manifest_id'],'groups':m['groups'],'crops':{'0':[.1,.2,.9,.8]}}
                 decision['groups'][1]['excluded']=True
                 request=urllib.request.Request(base+'/export',data=json.dumps(decision).encode(),headers={'Content-Type':'application/json'})

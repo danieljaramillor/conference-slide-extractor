@@ -16,7 +16,7 @@
       <div><h1>Review slides</h1><div id="stats"></div></div>
     </div>
     <nav class="workflow" aria-label="Review workflow">
-      <button id="compare-tab"><span class="step-number" aria-hidden="true">1</span><span>Compare pairs <small id="pair-count"></small></span></button>
+      <button id="compare-tab"><span class="step-number" aria-hidden="true">1</span><span>Review builds <small id="pair-count"></small></span></button>
       <button id="issues-tab"><span class="step-number" aria-hidden="true">2</span><span>Slide issues <small id="issue-count"></small></span></button>
       <button id="slides-tab"><span class="step-number" aria-hidden="true">3</span><span>Review deck <small id="deck-count"></small></span></button>
       <button id="export-tab"><span class="step-number" aria-hidden="true">4</span><span>Export <small id="export-step-status"></small></span></button>
@@ -25,14 +25,32 @@
   </header>
   <main class="review-main review-shell shell">
     <details id="errors" hidden><summary></summary><pre></pre></details>
-    <section id="comparison-view" class="pair-shell glass" aria-label="Compare possible matches" hidden>
+    <section id="comparison-view" class="pair-shell glass" aria-label="Review possible slide builds" hidden>
       <div id="pair-header" class="pair-header">
-        <div><h2 id="pair-title"></h2><p id="pair-reason"></p></div>
+        <div><h2 id="pair-title"></h2><p id="family-summary"></p></div>
         <div class="pair-nav">
-          <button id="previous-pair" aria-label="Previous pair">Previous</button>
-          <select id="pair-picker" aria-label="Jump to pair"></select>
-          <button id="next-pair" aria-label="Next pair">Next</button>
+          <button id="previous-family" aria-label="Previous build group">Previous group</button>
+          <select id="family-picker" aria-label="Choose build group"></select>
+          <button id="next-family" aria-label="Next build group">Next group</button>
         </div>
+      </div>
+      <div id="build-choices" class="build-choices">
+        <div class="build-toolbar">
+          <label>Base capture <select id="base-picker"></select></label>
+          <div class="pair-nav">
+            <button id="previous-pair" aria-label="Previous suggested comparison">‹</button>
+            <select id="pair-picker" aria-label="Suggested comparison"></select>
+            <button id="next-pair" aria-label="Next suggested comparison">›</button>
+          </div>
+        </div>
+        <div id="family-strip" class="family-strip" role="group" aria-label="Choose a capture to compare"></div>
+      </div>
+      <div id="build-evidence" class="build-toolbar build-evidence">
+        <div>
+          <p id="pair-reason"></p>
+          <p id="highlight-status" class="side-info" role="status" aria-live="polite"></p>
+        </div>
+        <button id="highlight-toggle" aria-pressed="true" disabled>Highlight changes</button>
       </div>
       <div id="compare-cards" class="comparison"></div>
       <div id="pair-actions" class="pair-actions">
@@ -40,9 +58,9 @@
         <button id="keep-both" class="primary">Keep both slides</button>
         <button id="keep-right">Merge, keep right</button>
       </div>
-      <p id="pair-help" class="pair-help">For a slide build, keep the capture with all the content. Keep both if either one has unique content.</p>
+      <p id="pair-help" class="pair-help">Each decision applies to the two captures on screen.</p>
       <div id="comparison-empty" class="compare-empty" hidden>
-        <h2>No pairs left to compare</h2>
+        <h2>No suggested comparisons left</h2>
         <p>Continue to check individual slides for quality issues.</p>
       </div>
       <div class="pair-actions"><button id="undo-pair" hidden>Undo last pair decision</button></div>
@@ -91,8 +109,23 @@
           <h2 id="deck-title" tabindex="-1">Review the deck</h2>
           <p id="deck-description">Check the included slides in the order they’ll appear in the ZIP.</p>
         </div>
-        <button id="show-excluded" aria-controls="grid" hidden>Review excluded captures</button>
+        <div class="deck-actions">
+          <label id="completed-picker-label" hidden>Inspect grouped build <select id="completed-build-picker"></select></label>
+          <button id="show-excluded" aria-controls="grid" hidden>Review excluded captures</button>
+        </div>
       </div>
+      <section id="completed-build" class="completed-build glass" aria-labelledby="completed-build-title" hidden>
+        <div class="build-toolbar">
+          <h3 id="completed-build-title">Grouped build</h3>
+          <button id="close-completed-build">Close build preview</button>
+        </div>
+        <div class="build-toolbar completed-build-controls">
+          <label>Compare with <select id="completed-capture-picker"></select></label>
+          <button id="completed-highlight-toggle" aria-pressed="true" disabled>Highlight changes</button>
+        </div>
+        <p id="completed-highlight-status" class="side-info" role="status" aria-live="polite"></p>
+        <div id="completed-cards" class="comparison"></div>
+      </section>
       <div class="controls toolbar glass">
         <select id="filter" aria-label="Group filter">
           <option value="included">Included in export</option><option value="all">All slides</option>

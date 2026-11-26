@@ -3,6 +3,9 @@ const server=typeof REVIEW_TOKEN!=='undefined';
 const storageKey='slide-review-'+(data.manifest_id||data.source+'-'+data.images.length);
 let groups=structuredClone(data.groups),selected=new Set(),crops={},cropId=null,dragStart=null;
 let resolvedPairs=new Set(), pairIndex=0, activeView='compare', lastPairDecision=null;
+let reviewPlan, compareSelection=null, activeComparison=null, comparisonRequest=null, showHighlights=true;
+let completedBuild=null,completedCandidate=null,completedComparison=null,completedRequest=null;
+const comparisonCache=new Map();
 let issueIndex=0, activeIssue=null, lastIssueDecision=null;
 let deckReviewed=false, exporting=false, zoomTrigger=null, cropTrigger=null;
 let revision=Date.now();
@@ -52,7 +55,7 @@ function pairKey(pair){return [pair.a,pair.b].sort((a,b)=>a-b).join(':')}
 function pairs(){
  const owners=new Map(groups.flatMap(g=>g.members.map(id=>[id,g])));
  const queue=new Map();
- for(const pair of data.review_pairs){
+ for(const pair of data.review_pairs||[]){
   const left=owners.get(pair.a),right=owners.get(pair.b);
   if(!left||!right||left===right||left.excluded||right.excluded||resolvedPairs.has(pairKey(pair)))continue;
   const key=[left.id,right.id].sort((a,b)=>a-b).join(':');
@@ -60,6 +63,50 @@ function pairs(){
   queue.get(key).examples.push(pair);
  }
  return [...queue.values()];
+}
+function buildReviewPlan(queue){
+ const links=new Map();
+ const order=new Map(queue.map((pair,index)=>[pair,index]));
+ for(const pair of queue){
+  for(const group of [pair.left,pair.right]){
+   if(!links.has(group.id))links.set(group.id,[]);
+   links.get(group.id).push(pair);
+  }
+ }
+ const visited=new Set(),families=[],comparisons=[];
+ for(const seed of queue){
+  if(visited.has(seed.left.id))continue;
+  const members=[],edges=new Set(),pending=[seed.left];
+  while(pending.length){
+   const group=pending.pop();
+   if(visited.has(group.id))continue;
+   visited.add(group.id);
+   members.push(group);
+   for(const pair of links.get(group.id)){
+    edges.add(pair);
+    const other=pair.left===group?pair.right:pair.left;
+    if(!visited.has(other.id))pending.push(other);
+   }
+  }
+  const familyIndex=families.length;
+  const entries=[...edges].sort((a,b)=>order.get(a)-order.get(b)).map(pair=>{
+   const entry={...pair,familyIndex,index:comparisons.length};
+   comparisons.push(entry);
+   return entry;
+  });
+  members.sort((a,b)=>a.id-b.id);
+  families.push({members,entries});
+ }
+ return {families,comparisons};
+}
+function manuallySeparated(left,right){
+ const a=new Set(left.members),b=new Set(right.members);
+ for(const key of resolvedPairs){
+  if(typeof key!=='string')continue;
+  const [x,y]=key.split(':').map(Number);
+  if(a.has(x)&&b.has(y)||a.has(y)&&b.has(x))return true;
+ }
+ return false;
 }
 function slideIssues(group){
  return (group.review_reasons||[]).filter(reason=>reason!=='possible duplicate / build');
@@ -95,50 +142,195 @@ function navigate(view){
  document.querySelector('[aria-current="step"]').focus();
  window.scrollTo(0,0);
 }
-function compareSide(group,side){
+function compareSide(group,side,allowCrop=false){
  const image=images.get(group.representative);
  const src=server||image.native_preview?nativeURL(image.id):`thumbs/${image.id}.jpg`;
- return `<article class="compare-side">
-  <div class="info"><h3><span class="side-marker" aria-hidden="true"></span>${side} · Group ${group.id}</h3>
-  <div class="side-info">${group.members.length} captures · ${image.slide_width||'?'} × ${image.slide_height||'?'} px</div>
+ const crop=crops[image.id];
+ const width=crop?Math.round(crop[2]*image.width)-Math.round(crop[0]*image.width):image.slide_width;
+ const height=crop?Math.round(crop[3]*image.height)-Math.round(crop[1]*image.height):image.slide_height;
+ const ratio=(width||image.width||16)/(height||image.height||9);
+ return `<article class="compare-side" data-side="${side.toLowerCase()}">
+  <div class="info"><h3><span class="side-marker" aria-hidden="true"></span>${side} <span class="side-info">Group ${group.id}</span></h3>
+  <span class="badge ready build-recommendation" hidden>Suggested complete capture</span>
+  <div class="side-info">${group.members.length} captures · ${width||'?'} × ${height||'?'} px</div>
+  ${allowCrop&&server?`<button class="compare-crop" data-crop="${image.id}" aria-label="Adjust ${side.toLowerCase()} crop">Adjust crop</button>`:''}
   <div class="file">${esc(image.name.split(/[\\/]/).pop())}</div></div>
-  <button class="preview-button" data-zoom="${image.id}" aria-label="Enlarge ${side.toLowerCase()} slide"><img src="${src}" alt="${side} slide preview"></button></article>`;
+  <button class="preview-button compare-preview" data-zoom="${image.id}" aria-label="Enlarge ${side.toLowerCase()} slide">
+   <span class="compare-image-frame" style="--slide-fit-width:${43*ratio}vh">
+    <img src="${src}" alt="${side} slide preview"><span class="change-layer" aria-hidden="true"></span>
+   </span>
+  </button></article>`;
 }
-function renderComparison(queue){
- pairIndex=Math.max(0,Math.min(pairIndex,queue.length-1));
- const current=queue[pairIndex];
- for(const id of ['pair-header','pair-actions','pair-help','compare-cards'])$(id).hidden=!current;
- $('comparison-empty').hidden=Boolean(current);
- $('undo-pair').hidden=!lastPairDecision;
+function variantCard(group,base,candidate){
+ const image=images.get(group.representative);
+ const label=group===base?'Base capture':group===candidate?'Compared capture':'Compare capture';
+ return `<button data-variant="${group.id}" aria-label="${label}, group ${group.id}" aria-pressed="${group===candidate}" ${group===base?'disabled':''}>
+  <img src="thumbs/${image.id}.jpg" loading="lazy" alt="">
+  <span>Group ${group.id}${group===base?' · Base':''}</span>
+ </button>`;
+}
+function validRegions(regions){
+ if(!Array.isArray(regions))return [];
+ return regions.filter(box=>Array.isArray(box)&&box.length===4&&box.every(Number.isFinite)
+  &&0<=box[0]&&box[0]<box[2]&&box[2]<=1&&0<=box[1]&&box[1]<box[3]&&box[3]<=1);
+}
+function drawChanges(cards,side,regions){
+ const layer=$(cards).querySelector(`[data-side="${side}"] .change-layer`);
+ layer.replaceChildren();
+ if(!showHighlights)return;
+ for(const [x1,y1,x2,y2] of regions){
+  const region=document.createElement('span');
+  region.className='change-region';
+  Object.assign(region.style,{left:`${100*x1}%`,top:`${100*y1}%`,width:`${100*(x2-x1)}%`,height:`${100*(y2-y1)}%`});
+  layer.append(region);
+ }
+}
+const reviewHighlights={cards:'compare-cards',toggle:'highlight-toggle',status:'highlight-status',sides:['base','candidate']};
+const completedHighlights={cards:'completed-cards',toggle:'completed-highlight-toggle',status:'completed-highlight-status',sides:['selected','alternate']};
+function paintHighlights(current,controls){
+ const evidence=current.evidence;
+ const [leftSide,rightSide]=controls.sides;
+ const left=validRegions(evidence?.regions?.left),right=validRegions(evidence?.regions?.right);
+ const available=evidence?.status==='ok'&&Boolean(left.length+right.length);
+ const toggle=$(controls.toggle);
+ const count=(regions,side)=>`${regions.length} changed area${regions.length===1?'':'s'} on the ${side}`;
+ toggle.disabled=!available;
+ toggle.setAttribute('aria-pressed',String(showHighlights&&available));
+ $(controls.status).textContent=current.pending?'Checking image differences…':
+  !server?'Open the batch in the app to highlight changes.':
+  available&&showHighlights?`${count(left,leftSide)} · ${count(right,rightSide)}`:
+  available?'Highlights hidden.':
+  evidence?.status==='ok'?'No visible changes detected.':'Reliable highlights unavailable for these captures.';
+ drawChanges(controls.cards,leftSide,available?left:[]);
+ drawChanges(controls.cards,rightSide,available?right:[]);
+}
+function paintComparison(){
+ const current=activeComparison;
  if(!current)return;
- $('pair-title').textContent=`Pair ${pairIndex+1} of ${queue.length} remaining`;
- const example=current.examples[0];
- const coverageGap=Math.abs((example.coverage_a??0)-(example.coverage_b??0));
- let reason='These captures look similar. Open either image to inspect details.';
- if(example.content_replacement)reason='Content changed in both captures. Check for different chart or table panels.';
- else if(coverageGap>.10&&example.title_changed<.025)reason='Possible build. Check whether one capture contains the complete slide.';
+ const evidence=current.evidence;
+ const a=current.left.representative,b=current.right.representative;
+ const recorded=(current.entry?.examples||[]).filter(pair=>pair.a===a&&pair.b===b||pair.a===b&&pair.b===a);
+ const numeric=Boolean(evidence?.numeric_conflict)||recorded.some(pair=>pair.numeric_conflict);
+ const conflict=numeric||evidence?.relationship==='content-replaced'||
+  (!crops[a]&&!crops[b]&&evidence?.status!=='ok'&&recorded.some(pair=>pair.content_replacement));
+ const separate=manuallySeparated(current.left,current.right);
+ const preferred=evidence?.status==='ok'&&!conflict?{
+  'left-complete':'base','right-complete':'candidate'
+ }[evidence.relationship]:null;
+ let reason='Check how these captures differ before merging them.';
+ if(!current.entry)reason='Choose a suggested comparison to save a decision about these captures.';
+ else if(separate)reason='A previous decision keeps these captures separate.';
+ else if(numeric)reason='A changed number or value was detected. Keep both slides to preserve it.';
+ else if(conflict)reason='Both captures contain distinct content. Keep both slides to preserve it.';
+ else if(preferred)reason=`The ${preferred} capture appears to include the content from both images.`;
+ else if(evidence?.relationship==='same-content')reason='Both captures appear to have the same content.';
  $('pair-reason').textContent=reason;
- $('pair-picker').innerHTML=queue.map((pair,i)=>`<option value="${i}">${i+1}. Groups ${pair.left.id} and ${pair.right.id}</option>`).join('');
- $('pair-picker').value=pairIndex;
+ paintHighlights(current,reviewHighlights);
+ for(const side of ['base','candidate']){
+  $('compare-cards').querySelector(`[data-side="${side}"] .build-recommendation`).hidden=preferred!==side;
+ }
+ current.mergeBlocked=conflict||separate;
+ $('keep-both').disabled=!current.entry;
+ $('keep-both').classList.toggle('primary',!preferred||current.mergeBlocked);
+ for(const [side,button] of [['base',$('keep-left')],['candidate',$('keep-right')]]){
+  button.disabled=!current.entry||current.mergeBlocked||current.pending;
+  button.textContent=`Merge, keep ${side}`;
+  button.classList.toggle('primary',preferred===side&&!current.mergeBlocked);
+ }
+}
+function loadComparison(current,paint,isCurrent){
+ if(!server){paint();return null}
+ const params=new URLSearchParams();
+ for(const [key,group] of [['a',current.left],['b',current.right]]){
+  const id=group.representative;
+  params.set(key,id);
+  if(crops[id])params.set(`crop_${key}`,crops[id].join(','));
+ }
+ const query=params.toString();
+ if(comparisonCache.has(query)){
+  current.evidence=comparisonCache.get(query);
+  paint();
+  return null;
+ }
+ const controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),5000);
+ current.pending=true;
+ paint();
+ fetch(`comparison?${query}`,{signal:controller.signal})
+  .then(response=>response.ok?response.json():null).then(evidence=>{
+   if(!evidence)return;
+   comparisonCache.set(query,evidence);
+   current.evidence=evidence;
+  }).catch(()=>{}).finally(()=>{
+   clearTimeout(timeout);
+   current.pending=false;
+   if(isCurrent())paint();
+  });
+ return controller;
+}
+function fitComparisonImages(cards){
+ for(const image of $(cards).querySelectorAll('img')){
+  const fit=()=>{
+   if(image.naturalHeight)image.parentElement.style.setProperty('--slide-fit-width',`${43*image.naturalWidth/image.naturalHeight}vh`);
+  };
+  if(image.complete)fit();
+  else image.addEventListener('load',fit,{once:true});
+ }
+}
+function renderComparison(){
+ comparisonRequest?.abort();
+ const {families,comparisons}=reviewPlan;
+ pairIndex=Math.max(0,Math.min(pairIndex,comparisons.length-1));
+ const suggestion=comparisons[pairIndex];
+ for(const id of ['pair-header','build-choices','build-evidence','pair-actions','pair-help','compare-cards'])$(id).hidden=!suggestion;
+ $('comparison-empty').hidden=Boolean(suggestion);
+ $('undo-pair').hidden=!lastPairDecision;
+ if(!suggestion){activeComparison=null;return}
+ const family=families[suggestion.familyIndex];
+ const base=family.members.find(group=>group.id===compareSelection?.left)||suggestion.left;
+ const candidate=family.members.find(group=>group.id===compareSelection?.right&&group!==base)||
+  (suggestion.right===base?suggestion.left:suggestion.right);
+ const entry=family.entries.find(pair=>
+  pair.left===base&&pair.right===candidate||pair.left===candidate&&pair.right===base);
+ if(entry)pairIndex=entry.index;
+ const strip=$('family-strip'),scroll=activeComparison?.familyIndex===suggestion.familyIndex?strip.scrollLeft:0;
+ activeComparison={left:base,right:candidate,entry,familyIndex:suggestion.familyIndex};
+ $('pair-title').textContent=`Build group ${suggestion.familyIndex+1} of ${families.length}`;
+ $('family-summary').textContent=`${family.members.length} versions · ${family.entries.length} comparison${family.entries.length===1?'':'s'} left`;
+ $('family-picker').innerHTML=families.map((_,index)=>`<option value="${index}">Build group ${index+1}</option>`).join('');
+ $('family-picker').value=suggestion.familyIndex;
+ $('previous-family').disabled=suggestion.familyIndex===0;
+ $('next-family').disabled=suggestion.familyIndex===families.length-1;
+ $('base-picker').innerHTML=family.members.map(group=>`<option value="${group.id}">Group ${group.id}</option>`).join('');
+ $('base-picker').value=base.id;
+ $('pair-picker').innerHTML='<option value="" disabled>Choose a suggestion</option>'+
+  family.entries.map(pair=>`<option value="${pair.index}">Groups ${pair.left.id} and ${pair.right.id}</option>`).join('');
+ $('pair-picker').value=entry?entry.index:'';
  $('previous-pair').disabled=pairIndex===0;
- $('next-pair').disabled=pairIndex>=queue.length-1;
- $('compare-cards').innerHTML=compareSide(current.left,'Left')+compareSide(current.right,'Right');
+ $('next-pair').disabled=pairIndex>=comparisons.length-1;
+ strip.innerHTML=family.members.map(group=>variantCard(group,base,candidate)).join('');
+ strip.scrollLeft=scroll;
+ $('compare-cards').innerHTML=compareSide(base,'Base',true)+compareSide(candidate,'Candidate',true);
+ fitComparisonImages('compare-cards');
+ const current=activeComparison;
+ comparisonRequest=loadComparison(current,paintComparison,()=>activeComparison===current);
 }
 function decidePair(decision){
- const entry=pairs()[pairIndex];
- if(!entry)return;
- lastPairDecision={groups:structuredClone(groups),resolved:new Set(resolvedPairs),index:pairIndex};
+ const {entry,left,right,mergeBlocked,pending,evidence}=activeComparison||{};
+ if(!entry||decision!=='both'&&(mergeBlocked||pending))return;
+ lastPairDecision={groups:structuredClone(groups),resolved:new Set(resolvedPairs),index:pairIndex,selection:compareSelection};
  if(decision==='both'){
   for(const example of entry.examples)resolvedPairs.add(pairKey(example));
  }else{
-  const keep=decision==='left'?entry.left:entry.right;
-  const other=decision==='left'?entry.right:entry.left;
+  const keep=decision==='left'?left:right;
+  const other=decision==='left'?right:left;
   // Keep the earliest position in the export while honoring the chosen image.
   const first=groups.indexOf(keep)<groups.indexOf(other)?keep:other;
   const second=first===keep?other:keep;
   first.members=[...first.members,...second.members];
   first.representative=keep.representative;
-  first.builds=(first.builds||0)+(second.builds||0);
+  const isBuild=evidence?.relationship==='left-complete'||evidence?.relationship==='right-complete';
+  first.builds=(first.builds||0)+(second.builds||0)+Number(isBuild);
   setExclusionType(first,exclusionType(keep));
   first.review_reasons=slideIssues(keep);
   first.needs_review=first.review_reasons.length>0;
@@ -146,6 +338,7 @@ function decidePair(decision){
   groups=groups.filter(group=>group!==second);
   selected.clear();
  }
+ compareSelection=null;
  lastIssueDecision=null;
  persist();render();
  if($('pair-actions').hidden)$('continue-step').focus();
@@ -156,7 +349,7 @@ function restore(d){
  groups=d.groups;crops=d.crops||{};
  resolvedPairs=new Set(d.resolved_pairs||[]);
  revision=Math.max(revision,d.revision||0);
- pairIndex=0;issueIndex=0;lastPairDecision=null;lastIssueDecision=null;selected.clear();
+ pairIndex=0;compareSelection=null;issueIndex=0;lastPairDecision=null;lastIssueDecision=null;selected.clear();
 }
 
 const issueDescriptions={
@@ -251,15 +444,15 @@ function decideIssue(exclude){
 
 const stepOrder=['compare','issues','slides','export'];
 const sections=['comparison-view','issue-view','slide-view','export-view'];
-const stepNames={compare:'Compare pairs',issues:'Slide issues',slides:'Review deck',export:'Export'};
-function renderWorkflow(pairCount,issueCount,included,excluded){
+const stepNames={compare:'Review builds',issues:'Slide issues',slides:'Review deck',export:'Export'};
+function renderWorkflow(familyCount,issueCount,included,excluded){
  const step=stepOrder.indexOf(activeView);
- const firstPending=pairCount?'compare':issueCount?'issues':null;
- $('pair-count').textContent=pairCount?`${pairCount} left`:'Complete';
+ const firstPending=familyCount?'compare':issueCount?'issues':null;
+ $('pair-count').textContent=familyCount?`${familyCount} group${familyCount===1?'':'s'} left`:'Complete';
  $('issue-count').textContent=issueCount?`${issueCount} left`:'Complete';
  $('deck-count').textContent=deckReviewed?'Reviewed':`${included} included`;
  $('export-step-status').textContent=deckReviewed&&included?'Ready':'After review';
- const locked=[false,Boolean(pairCount),Boolean(firstPending),!deckReviewed||!included||Boolean(firstPending)];
+ const locked=[false,Boolean(familyCount),Boolean(firstPending),!deckReviewed||!included||Boolean(firstPending)];
  stepOrder.forEach((view,index)=>{
   const button=$(view+'-tab');
   const current=index===step;
@@ -280,7 +473,7 @@ function renderWorkflow(pairCount,issueCount,included,excluded){
  next.textContent=earlierPending?`Return to ${stepNames[nextView].toLowerCase()}`:
   ({issues:'Continue to slide issues',slides:'Continue to deck review',export:'Continue to export'})[nextView]||'Continue';
  $('step-hint').textContent=activeView===firstPending?
-  `Resolve the remaining ${activeView==='compare'?'pairs':'slide issues'} to continue.`:
+  `Resolve the remaining ${activeView==='compare'?'build comparisons':'slide issues'} to continue.`:
   step===2&&!included&&!firstPending?(excluded?'Restore an excluded capture to continue.':'There are no slides to export.'):'';
  $('step-hint').hidden=!$('step-hint').textContent;
  $('export').hidden=!server;
@@ -318,11 +511,39 @@ function deckCard(group,position){
   </div>
  </article>`;
 }
+function renderCompletedBuild(included){
+ completedRequest?.abort();
+ completedComparison=null;
+ const builds=included.filter(group=>group.builds>0&&group.members.length>1);
+ const build=builds.find(group=>group.id===completedBuild);
+ $('completed-picker-label').hidden=!builds.length;
+ $('completed-build-picker').innerHTML='<option value="">Choose a build</option>'+
+  builds.map(group=>`<option value="${group.id}">Group ${group.id} · ${group.members.length} captures</option>`).join('');
+ $('completed-build-picker').value=build?.id||'';
+ $('completed-build').hidden=!build;
+ if(!build){
+  $('completed-cards').replaceChildren();
+  return;
+ }
+ const imagesInBuild=build.members.filter(id=>id!==build.representative).sort((a,b)=>a-b);
+ if(!imagesInBuild.includes(completedCandidate))completedCandidate=imagesInBuild[0];
+ $('completed-build-title').textContent=`Grouped build · Group ${build.id}`;
+ $('completed-capture-picker').innerHTML=imagesInBuild.map(id=>
+  `<option value="${id}">${esc(images.get(id).name.split(/[\\/]/).pop())}</option>`).join('');
+ $('completed-capture-picker').value=completedCandidate;
+ const alternate={...build,representative:completedCandidate};
+ const current={left:build,right:alternate};
+ completedComparison=current;
+ $('completed-cards').innerHTML=compareSide(build,'Selected')+compareSide(alternate,'Alternate');
+ fitComparisonImages('completed-cards');
+ completedRequest=loadComparison(current,()=>paintHighlights(current,completedHighlights),()=>completedComparison===current);
+}
 function renderDeck(included){
  const expanded=[...document.querySelectorAll('.inspect[open]')].map(el=>el.closest('.card').id);
  const term=$('search').value.trim().toLowerCase(),filter=$('filter').value;
  const excludedCount=groups.length-included.length;
  const reviewingExclusions=filter==='excluded';
+ renderCompletedBuild(reviewingExclusions?[]:included);
  const showExcluded=$('show-excluded');
  showExcluded.hidden=!excludedCount&&!reviewingExclusions;
  showExcluded.textContent=reviewingExclusions?
@@ -349,16 +570,24 @@ function render(){
  const issues=groups.filter(hasIssue);
  const included=groups.filter(group=>!group.excluded);
  const excluded=groups.length-included.length;
- const queue=pairs();
+ reviewPlan=buildReviewPlan(pairs());
  $('stats').textContent=`${included.length} slides included · ${excluded} excluded · ${data.images.length}/${data.stats.input_images} captures processed`;
  $('errors').hidden=data.errors.length===0;
  $('errors').querySelector('summary').textContent=`${data.errors.length} images could not be read`;
  $('errors').querySelector('pre').textContent=data.errors.map(error=>error.name+': '+error.error).join('\n');
- renderWorkflow(queue.length,issues.length,included.length,excluded);
- if(activeView==='compare')renderComparison(queue);
+ renderWorkflow(reviewPlan.families.length,issues.length,included.length,excluded);
+ if(activeView==='compare')renderComparison();
+ else{
+  activeComparison=null;
+  comparisonRequest?.abort();
+ }
  if(activeView==='issues')renderIssues(issues);
  if(activeView==='slides')renderDeck(included);
- else $('grid').replaceChildren();
+ else{
+  completedRequest?.abort();
+  completedComparison=null;
+  $('grid').replaceChildren();
+ }
 }
 for(const step of stepOrder)$(step+'-tab').onclick=()=>navigate(step);
 $('back-step').onclick=()=>{
@@ -370,15 +599,59 @@ $('continue-step').onclick=()=>{
  if(next==='export')deckReviewed=true;
  navigate(next);
 };
-$('pair-picker').onchange=e=>{pairIndex=Number(e.target.value);renderComparison(pairs())};
-$('previous-pair').onclick=()=>{pairIndex--;renderComparison(pairs())};
-$('next-pair').onclick=()=>{pairIndex++;renderComparison(pairs())};
+function goToSuggestion(index){
+ if(!reviewPlan.comparisons[index])return;
+ pairIndex=index;
+ compareSelection=null;
+ renderComparison();
+}
+function goToFamily(index){
+ const first=reviewPlan.families[index]?.entries[0];
+ if(first)goToSuggestion(first.index);
+}
+$('family-picker').onchange=e=>goToFamily(Number(e.target.value));
+$('previous-family').onclick=()=>goToFamily(activeComparison.familyIndex-1);
+$('next-family').onclick=()=>goToFamily(activeComparison.familyIndex+1);
+$('pair-picker').onchange=e=>goToSuggestion(Number(e.target.value));
+$('previous-pair').onclick=()=>goToSuggestion(pairIndex-1);
+$('next-pair').onclick=()=>goToSuggestion(pairIndex+1);
+$('base-picker').onchange=e=>{
+ const left=Number(e.target.value);
+ compareSelection={left,right:activeComparison.right.id===left?activeComparison.left.id:activeComparison.right.id};
+ renderComparison();
+};
+$('family-strip').onclick=e=>{
+ const button=e.target.closest('[data-variant]');
+ if(!button||button.disabled)return;
+ compareSelection={left:activeComparison.left.id,right:Number(button.dataset.variant)};
+ renderComparison();
+ $('family-strip').querySelector(`[data-variant="${compareSelection.right}"]`)?.focus({preventScroll:true});
+};
+$('highlight-toggle').onclick=()=>{showHighlights=!showHighlights;paintComparison()};
+$('completed-build-picker').onchange=e=>{
+ completedBuild=Number(e.target.value)||null;
+ completedCandidate=null;
+ renderCompletedBuild(groups.filter(group=>!group.excluded));
+};
+$('completed-capture-picker').onchange=e=>{
+ completedCandidate=Number(e.target.value);
+ renderCompletedBuild(groups.filter(group=>!group.excluded));
+};
+$('close-completed-build').onclick=()=>{
+ completedBuild=null;
+ renderCompletedBuild(groups.filter(group=>!group.excluded));
+ $('completed-build-picker').focus();
+};
+$('completed-highlight-toggle').onclick=()=>{
+ showHighlights=!showHighlights;
+ if(completedComparison)paintHighlights(completedComparison,completedHighlights);
+};
 $('keep-left').onclick=()=>decidePair('left');
 $('keep-both').onclick=()=>decidePair('both');
 $('keep-right').onclick=()=>decidePair('right');
 $('undo-pair').onclick=()=>{
  if(!lastPairDecision)return;
- ({groups,resolved:resolvedPairs,index:pairIndex}=lastPairDecision);
+ ({groups,resolved:resolvedPairs,index:pairIndex,selection:compareSelection}=lastPairDecision);
  lastPairDecision=null;selected.clear();persist();render();notify('Last pair decision undone.');
 };
 $('issue-picker').onchange=event=>{issueIndex=Number(event.target.value);renderIssues(groups.filter(hasIssue))};
@@ -591,7 +864,8 @@ $('applycrop').onclick=()=>{
  lastPairDecision=null;
  closeCrop();
  persist();render();
- (activeView==='issues'?$('issue-preview'):$('continue-step')).focus();
+ const updatedCrop=activeView==='compare'?$('compare-cards').querySelector(`[data-crop="${cropId}"]`):null;
+ (updatedCrop||(activeView==='issues'?$('issue-preview'):$('continue-step'))).focus();
  notify('Crop adjusted. Text will be refreshed on export.');
 };
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeZoom();closeCrop()}});

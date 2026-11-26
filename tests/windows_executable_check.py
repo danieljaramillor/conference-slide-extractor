@@ -79,11 +79,13 @@ def check(executable, browser=False):
         if browser:
             from browser_batch_check import check as check_browser
             from browser_exclusion_check import check as check_exclusions, check_retained_blend, check_transition_review
+            from browser_group_check import check as check_group_review
 
             check_browser(executable, sys.executable, str(archive), root / 'dashboard.png', browser_channel=None)
             check_exclusions(output, browser_channel=None)
             check_transition_review(transition_output, browser_channel=None)
             check_retained_blend(one_sided_output, browser_channel=None)
+            check_group_review(executable=executable, browser_channel=None)
 
 
 if __name__ == '__main__':

@@ -15,9 +15,9 @@ The executable bundles Python, the OCR models, and their dependencies. It runs w
 ## Process and review a batch
 
 1. Drop a screenshot ZIP into the dashboard or select **Choose ZIP**. Select **Extract slides**, follow its progress in **Batches**, then select **Review slides**.
-2. In **Compare pairs**, inspect the two images. Choose **Keep both slides** if either contains unique information. For a duplicate or an additive build, select **Merge, keep left** or **Merge, keep right** to retain the better or more complete capture. Click either image to enlarge it. Use **Next** to skip a pair and **Undo last pair decision** to reverse a choice.
+2. In **Review builds**, open a group of related captures and pick two to compare. **Highlight changes** marks where content differs when the image alignment is reliable. For a duplicate or additive build, choose **Merge, keep base** or **Merge, keep candidate** to retain the better capture. Use **Keep both slides** when each contains unique information. Click either image to enlarge it, or use **Undo last pair decision** to reverse a choice.
 3. Continue to **Slide issues**. The app puts each flagged slide next to its quality checks. Enlarge it, adjust the crop, or choose another capture. Select **Mark checked and next** when it looks right or **Exclude slide** to omit it from the export.
-4. Continue to **Review deck** to check the included slides in export order. Use the **Excluded** filter to restore a slide. Edits that create new issues send you back to the relevant check before export.
+4. Continue to **Review deck** to check the included slides in export order. Use **Inspect grouped build** to compare the selected slide with an earlier capture. Use the **Excluded** filter to restore a slide. Edits that create new issues send you back to the relevant check before export.
 5. Select **Continue to export**, then **Export ZIP…** and choose the folder and filename. If your browser shows **Export slides**, select **Download export ZIP** when it’s ready. The archive contains native-resolution PNGs, original captures, recognized text, line coordinates, and a CSV mapping. Open the same app and batch later to continue a saved review.
 
 **Capture quality matters.** The app preserves available source pixels. Small, blurry, or compressed text can still be misread. Verify critical numbers against the original slide. If different chart or table frames contain unique data, keep each frame unless one capture includes all the content.
@@ -42,4 +42,4 @@ For a job runner, scan an already complete archive directly. Use a fresh output 
 .\ConferenceSlideExtractor-Windows-x64.exe scan 'D:\Incoming\session.zip' --output 'D:\Results\session-001'
 ```
 
-See [review and troubleshooting](docs/REVIEW.md), [transition and build QC](docs/TRANSITION-QC.md), [speaker exclusion QC](docs/SPEAKER-QC.md), [build instructions](docs/BUILD.md), and the [scaling plan](SCALING.md).
+See [review and troubleshooting](docs/REVIEW.md), [grouped build QC](docs/BUILD-REVIEW-QC.md), [transition and build QC](docs/TRANSITION-QC.md), [speaker exclusion QC](docs/SPEAKER-QC.md), [build instructions](docs/BUILD.md), and the [scaling plan](SCALING.md).

@@ -22,7 +22,7 @@ from slide_regions import detect_region, extract, quality, recover_projected_scr
 from slide_transitions import EXCLUSION_REASON, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.8.0'
+APP_VERSION = '2.9.0'
 cv2.setNumThreads(1)
 
 

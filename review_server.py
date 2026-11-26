@@ -1,6 +1,7 @@
 """Loopback-only native image previews and one-click reviewed export."""
 from __future__ import annotations
 
+import hashlib
 from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 import json
 import mimetypes
@@ -15,6 +16,8 @@ import zipfile
 
 import cv2
 
+from slide_comparison import compare_captures
+from slide_ocr import text_evidence
 from slide_regions import extract
 
 
@@ -29,6 +32,19 @@ def review_handler(directory):
     review_script=Path(__file__).with_name('review.js').read_bytes()
     export_lock=threading.Lock()
     state_lock=threading.Lock()
+
+    def native_capture(image_id, crop=None, *, verify_source=False):
+        item=images[image_id]
+        data=source.read(item['name'])
+        if verify_source and item.get('sha256') and hashlib.sha256(data).hexdigest()!=item['sha256']:
+            raise ValueError('A source capture changed after scanning. Run the scan again.')
+        if crop:
+            override=[float(value) for value in crop.split(',')]
+            decision={'source':manifest['source'],'manifest_id':manifest.get('manifest_id'),
+                      'groups':manifest['groups'],'crops':{str(image_id):override}}
+            validate_review(manifest,decision)
+            item={**item,'crop':override,'quad':None,'ocr':{}}
+        return extract(decode(data),item),item
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self,*args,**kwargs):
@@ -79,21 +95,28 @@ def review_handler(directory):
                     return self.respond(body.encode('utf-8'),'text/html; charset=utf-8')
                 if path.startswith(('/native/','/source/')):
                     image_id=int(Path(path).stem)
-                    item=images[image_id]
-                    image=decode(source.read(item['name']))
                     if path.startswith('/native/'):
                         crop=parse_qs(parsed.query).get('crop')
-                        if crop:
-                            override=[float(x) for x in crop[0].split(',')]
-                            decision={'source':manifest['source'],'manifest_id':manifest.get('manifest_id'),
-                                      'groups':manifest['groups'],'crops':{str(image_id):override}}
-                            validate_review(manifest,decision)
-                            item={**item,'crop':override,'quad':None}
-                        image=extract(image,item)
+                        image,_=native_capture(image_id,crop[0] if crop else None)
+                    else:
+                        image=decode(source.read(images[image_id]['name']))
                     ok,encoded=cv2.imencode('.png',image)
                     if not ok:
                         raise ValueError('Image encoding failed')
                     return self.respond(encoded.tobytes(),'image/png')
+                if path=='/comparison':
+                    query=parse_qs(parsed.query)
+                    if any(len(query.get(key, []))!=1 for key in ('a','b')):
+                        raise ValueError('Choose two captures to compare.')
+                    ids=[int(query[key][0]) for key in ('a','b')]
+                    crops=[query.get(f'crop_{key}',[None])[0] for key in ('a','b')]
+                    results=[native_capture(image_id,crop,verify_source=True) for image_id,crop in zip(ids,crops)]
+                    (left,left_item),(right,right_item)=results
+                    evidence=compare_captures(left,right,left_item,right_item)
+                    if any(crops) and all(images[image_id].get('ocr',{}).get('status')=='ok' for image_id in ids):
+                        original=text_evidence(*(images[image_id].copy() for image_id in ids))
+                        evidence['numeric_conflict'] |= original['numeric_conflict']
+                    return self.respond(evidence)
                 if path=='/review.js':
                     return self.respond(review_script,'text/javascript; charset=utf-8')
                 target=(root/path.lstrip('/')).resolve()

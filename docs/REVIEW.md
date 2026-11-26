@@ -1,15 +1,19 @@
 # Review and troubleshoot
 
-## Make decisions in Compare pairs
+## Review related captures together
 
-The queue shows groups the app considered similar enough for a closer comparison. The left and right previews show the currently selected capture from each group. Click either to see its native-resolution crop.
+**Review builds** gathers related suggestions into groups so you can see nearby variants in one place. Choose a **Base capture**, then pick a candidate from the capture strip or the suggested-comparison menu. **Highlight changes** marks additions and other differences when the captures align reliably. The app may recommend a more complete capture when the visual evidence supports it. Click either preview to inspect its native-resolution image.
+
+Decisions apply to the two captures in the current suggestion. You can also inspect other combinations within the same group. Return to a suggested comparison to save a decision. If a changed value or distinct content is detected, **Keep both slides** is the available decision.
+
+If a webcam or broadcast frame takes up part of the image, use **Adjust crop** above each preview to select the slide pane. The app compares the updated crops and checks the retained crop in **Slide issues** before export.
 
 | What you see | What to select |
 | --- | --- |
-| The same slide twice | **Merge, keep left** or **Merge, keep right**. Prefer the sharper capture with the entire slide visible. |
+| The same slide twice | **Merge, keep base** or **Merge, keep candidate**. Prefer the sharper capture with the entire slide visible. |
 | One capture adds information while keeping everything in the other | Merge and keep the more complete capture. |
 | A chart, column, value, or panel is different and both captures contain unique information | **Keep both slides**. |
-| You cannot tell yet | Select **Next** or choose another pair from the dropdown. The skipped pair stays in the queue. |
+| You cannot tell yet | Use the next-comparison arrow or choose another suggestion from the menu. The skipped pair stays in the queue. |
 
 Pair decisions move you to the next unresolved suggestion and save to the batch. **Undo last pair decision** is available during the current review session. Once the pair queue is clear, continue to **Slide issues**.
 
@@ -22,6 +26,8 @@ After applying a crop, check the updated preview before approving it. Export ref
 ## Review the deck
 
 Open **Review deck** when both queues are clear. The default view shows included slides in export order. You can search filenames, inspect alternate captures, split or merge groups, and restore captures through the **Excluded** filter. If an edit creates a new pair or slide issue, complete that check before exporting. Select **Continue to export** when the deck is ready.
+
+Use **Inspect grouped build** to open a build and compare the selected export capture with any alternate. You can toggle highlights and close the preview while keeping the current selection.
 
 Choose **Review excluded captures** to inspect blended transitions, likely speaker-only captures, and manual exclusions. A screenshot with a readable slide can be restored with **Restore to deck**. A restored automatic exclusion returns to **Slide issues** so you can verify the chosen capture before export.
 
