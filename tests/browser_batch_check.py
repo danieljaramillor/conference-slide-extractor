@@ -11,7 +11,8 @@ from playwright.sync_api import sync_playwright
 
 def check(program, python, fixture, screenshot):
     chrome = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
-    with tempfile.TemporaryDirectory(prefix='extractor-ui-') as directory:
+    # Windows can briefly hold the input ZIP after stopping the frozen process.
+    with tempfile.TemporaryDirectory(prefix='extractor-ui-', ignore_cleanup_errors=True) as directory:
         frozen = program.suffix.lower() == '.exe'
         launch = [str(program), '--no-browser'] if frozen else [str(Path(python).resolve()), '-u', str(program)]
         proc = subprocess.Popen([*launch, '--data', directory, '--workers', '2', '--ocr-workers', '2'],
@@ -72,6 +73,7 @@ def check(program, python, fixture, screenshot):
             else:
                 proc.terminate()
             proc.wait(timeout=10)
+            proc.stdout.close()
     print('Package GUI passed: invalid ZIP recovery, real OCR, persisted batch status, native preview, export download, local-only browser requests.')
 
 
