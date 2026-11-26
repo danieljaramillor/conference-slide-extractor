@@ -8,8 +8,10 @@ import tempfile
 import zipfile
 
 import cv2
+import numpy as np
 
 from mixed_fixtures import fixtures
+from presenter_fixtures import SLIDE_BOUNDS, presenter_annotation_sequence, presenter_capture_sequence
 from scan_integrity_check import check as check_integrity
 from speaker_fixtures import camera_capture
 from transition_fixtures import build_transition_sequence, one_sided_sequence, timestamped
@@ -60,6 +62,55 @@ def check_one_sided(executable, root):
     return output
 
 
+def check_presenter_crops(executable, root):
+    cases = presenter_capture_sequence()
+    _, output, manifest = scan_captures(executable, root, 'presenter-crops', cases)
+    selected = [group for group in manifest['groups'] if not group.get('excluded')]
+    assert len(selected) == 3, selected
+    build = next(group for group in selected if 0 in group['members'])
+    assert build['members'] == list(range(7)) and build['representative'] in (5, 6), build
+    assert {group['representative'] for group in selected if group is not build} == {7, 8}, selected
+    assert not manifest['review_pairs'], manifest['review_pairs']
+    assert manifest['audit']['presenter_crop']['captures'] == 8
+
+    left, top, right, bottom = SLIDE_BOUNDS
+    for image in manifest['images'][:8]:
+        pixel_box = [round(value * axis) for value, axis in zip(image['crop'], (1920, 1080, 1920, 1080))]
+        assert pixel_box == list(SLIDE_BOUNDS) and image['quad'] is None, image
+        assert image['crop_mode'] == 'presenter-slide', image
+        assert (image['slide_width'], image['slide_height']) == (right - left, bottom - top), image
+    assert manifest['images'][8]['crop'] == [0.0, 0.0, 1.0, 1.0]
+
+    for export_index, group in enumerate(selected, 1):
+        capture_index = group['representative']
+        _, frame = cases[capture_index]
+        expected = frame[top:bottom, left:right] if capture_index < 8 else frame
+        exported = cv2.imread(str(output / 'selected/slides' / f'{export_index:04d}.png'))
+        np.testing.assert_array_equal(exported, expected)
+    build_text = (output / 'selected/text' / f'{selected.index(build) + 1:04d}.txt').read_text(encoding='utf-8')
+    assert 'Trial results' in build_text and '47.8' in build_text, build_text
+    assert 'Broadcast Hall North' not in build_text and 'Presenter information' not in build_text, build_text
+    assert check_integrity(output) == {'captures': len(cases), 'slides': 3, 'text_files': 3}
+
+
+def check_presenter_annotations(executable, root):
+    cases = presenter_annotation_sequence()
+    _, output, manifest = scan_captures(executable, root, 'presenter-annotations', cases)
+    assert manifest['audit']['presenter_crop']['captures'] == len(cases)
+    assert not manifest['review_pairs'], manifest['review_pairs']
+    assert len(manifest['groups']) == 1, manifest['groups']
+    group, = manifest['groups']
+    assert group['representative'] in (4, 5), group
+    assert group['members'] == list(range(len(cases))) and group['builds'], group
+
+    left, top, right, bottom = SLIDE_BOUNDS
+    exported = cv2.imread(str(output / 'selected/slides/0001.png'))
+    np.testing.assert_array_equal(exported, cases[4][1][top:bottom, left:right])
+    text = (output / 'selected/text/0001.txt').read_text(encoding='utf-8')
+    assert 'Treatment response by cohort' in text, text
+    assert check_integrity(output) == {'captures': len(cases), 'slides': 1, 'text_files': 1}
+
+
 def check(executable, browser=False):
     with tempfile.TemporaryDirectory(prefix='slide-exe-check-') as directory:
         root = Path(directory)
@@ -76,6 +127,8 @@ def check(executable, browser=False):
         assert (output / 'review.html').is_file()
         transition_output = check_transitions(executable, root)
         one_sided_output = check_one_sided(executable, root)
+        check_presenter_crops(executable, root)
+        check_presenter_annotations(executable, root)
         if browser:
             from browser_batch_check import check as check_browser
             from browser_exclusion_check import check as check_exclusions, check_retained_blend, check_transition_review

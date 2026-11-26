@@ -112,6 +112,45 @@ def _preserves_native_content(earlier, later):
     return _prior_content_untouched(old, _edges(old), meaningful, np.ones(active.shape, dtype=bool))
 
 
+def has_added_chart_outlines(earlier, later):
+    """Detect thin colored chart outlines on two equally sized native crops."""
+    if earlier.shape != later.shape or min(earlier.shape[:2]) < 270:
+        return False
+    height, width = earlier.shape[:2]
+    earlier, later = (cv2.GaussianBlur(image, (3, 3), 0) for image in (earlier, later))
+    changed = cv2.absdiff(earlier, later).max(axis=2) > 27
+    count = np.count_nonzero(changed)
+    if not .003 <= count / changed.size <= .018:
+        return False
+
+    # Bridge interruptions at chart intersections, then retain long strokes
+    # along each axis. A solid panel has substantial support in both axes.
+    pixels = changed.astype(np.uint8)
+    gap = max(3, 2 * round(width * .003) + 1)
+    horizontal_length = 2 * round(width * .0225) + 1
+    vertical_length = 2 * round(height * .0375) + 1
+    horizontal = cv2.morphologyEx(pixels, cv2.MORPH_CLOSE, np.ones((1, gap), np.uint8))
+    vertical = cv2.morphologyEx(pixels, cv2.MORPH_CLOSE, np.ones((gap, 1), np.uint8))
+    horizontal = cv2.morphologyEx(horizontal, cv2.MORPH_OPEN, np.ones((1, horizontal_length), np.uint8)) > 0
+    vertical = cv2.morphologyEx(vertical, cv2.MORPH_OPEN, np.ones((vertical_length, 1), np.uint8)) > 0
+    if (min(np.count_nonzero(horizontal & changed), np.count_nonzero(vertical & changed)) < count * .10
+            or np.count_nonzero(horizontal & vertical & changed) > count * .10):
+        return False
+
+    strokes = cv2.dilate((horizontal | vertical).astype(np.uint8), np.ones((gap, gap), np.uint8)) > 0
+    supported = changed & strokes
+    supported_count = np.count_nonzero(supported)
+    # A small pointer movement may accompany a reveal. Require the remaining
+    # changes to follow the detected outlines.
+    if count - supported_count > min(count * .025, changed.size * .00010):
+        return False
+
+    old_saturation, new_saturation = (cv2.cvtColor(image, cv2.COLOR_BGR2HSV)[:, :, 1].astype(np.int16)
+                                      for image in (earlier, later))
+    increased = new_saturation - old_saturation > 16
+    return np.count_nonzero(increased & supported) >= supported_count * .86
+
+
 def compare_captures(left, right, left_item=None, right_item=None):
     """Return visible regions and conservative, advisory build evidence."""
     left_height, left_width = left.shape[:2]

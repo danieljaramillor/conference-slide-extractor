@@ -1,6 +1,8 @@
 """Per-image slide regions, with native-resolution extraction and quality metadata."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
 
@@ -59,6 +61,148 @@ def _refine_rectangle(image,box,radius):
         return lo+int(np.argmax(values))+1 if float(values.max())>15 else y
     y1,y2=horizontal(y1),horizontal(y2)
     return (x1/w,y1/h,x2/w,y2/h)
+
+
+@dataclass(slots=True)
+class _PresenterLayout:
+    crop: tuple[float, float, float, float]
+    chrome: np.ndarray
+    slide: np.ndarray
+    camera: np.ndarray
+
+
+def _bright_panel(gray, threshold):
+    mask = (gray > threshold).astype(np.uint8)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(contour)
+    if cv2.contourArea(contour) < w * h * .78:
+        return None
+    return (x, y, x + w, y + h)
+
+
+def _uniform_rows(image):
+    colors = np.median(image, axis=1)[:, None]
+    return np.mean(np.max(np.abs(image - colors), axis=2) < 17)
+
+
+def presenter_layout(image):
+    """Collect evidence of a broadcast container, without changing the crop."""
+    height, width = image.shape[:2]
+    if width < 320 or height < 180 or not 1.35 <= width / height <= 2.4:
+        return None
+    sw = min(480, width)
+    sh = round(height * sw / width)
+    small = cv2.resize(image, (sw, sh), interpolation=cv2.INTER_AREA)
+    header_color = np.median(small[:max(1, round(sh * .04))], axis=(0, 1))
+    if np.ptp(header_color) < 17 or np.mean(header_color) > 180:
+        return None
+
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    panel = _bright_panel(gray, 210)
+    core = _bright_panel(gray, 235)
+    if panel is None or core is None or max(abs(a - b) for a, b in zip(panel, core)) > 3:
+        return None
+    x1, y1, x2, y2 = panel
+    pane_width, pane_height = x2 - x1, y2 - y1
+    if not (.52 <= pane_width / sw <= .80 and .60 <= pane_height / sh <= .87 and
+            .045 <= y1 / sh <= .24 and .76 <= y2 / sh <= .952 and
+            1.30 <= pane_width / pane_height <= 2.12):
+        return None
+
+    margin = max(2, round(sw * .013))
+    if x1 <= sw * .085 and sw - x2 >= sw * .17:
+        sx1, sx2 = x2 + margin, sw - margin
+    elif sw - x2 <= sw * .085 and x1 >= sw * .17:
+        sx1, sx2 = margin, x1 - margin
+    else:
+        return None
+
+    header = small[:y1 - 2]
+    footer = small[y2 + 2:]
+    lower_side = small[y1 + round(pane_height * .86):y2 - 2, sx1:sx2]
+    if min(_uniform_rows(header), _uniform_rows(footer), _uniform_rows(lower_side)) < .73:
+        return None
+    side_color = np.median(lower_side, axis=(0, 1))
+    footer_color = np.median(footer, axis=(0, 1))
+    if (np.max(np.abs(side_color - footer_color)) > 65 or
+            np.max(np.abs(header_color - footer_color)) < 24):
+        return None
+
+    camera = gray[y1 + round(pane_height * .04):y1 + round(pane_height * .38), sx1:sx2]
+    # A bright independent content panel can have its own build. Do not
+    # infer from its motion that it is a camera feed.
+    if np.mean(camera > 210) > .30 or np.ptp(np.quantile(camera, (.10, .90))) < 31:
+        return None
+    slide = gray[y1:y2, x1:x2]
+    if _text_strokes(slide) < 8:
+        return None
+
+    normalized = (x1 / sw, y1 / sh, x2 / sw, y2 / sh)
+    crop = _refine_rectangle(image, normalized, max(4, round(2 * width / sw)))
+    chrome = np.vstack([cv2.resize(band, (72, 12), interpolation=cv2.INTER_AREA)
+                        for band in (header, footer)])
+    return _PresenterLayout(crop, chrome,
+                            cv2.resize(slide, (144, 81), interpolation=cv2.INTER_AREA),
+                            cv2.resize(camera, (72, 44), interpolation=cv2.INTER_AREA))
+
+
+def _close_crop(first, second, tolerance):
+    return max(abs(a - b) for a, b in zip(first, second)) <= tolerance
+
+
+def _same_container(reference, candidate):
+    return (_close_crop(reference.crop, candidate.crop, .012) and
+            np.mean(cv2.absdiff(reference.chrome, candidate.chrome)) <= 4)
+
+
+def _same_slide(first, second):
+    delta = cv2.absdiff(first.slide, second.slide)
+    return delta.mean() <= 1.1 and np.mean(delta > 12) <= .004
+
+
+def _anchored_crop(layouts, known_crops, index):
+    previous, current, following = layouts[index - 1:index + 2]
+    before, after = known_crops[index - 1], known_crops[index + 1]
+    if any(layout is None for layout in (previous, current, following)) or before is None or after is None:
+        return None
+    if (all(_same_container(current, neighbor) for neighbor in (previous, following)) and
+            all(_close_crop(crop, current.crop, .005) for crop in (before, after)) and
+            (_same_slide(previous, current) or _same_slide(current, following))):
+        return current.crop
+    return None
+
+
+def confirmed_presenter_crops(layouts, known_crops=None):
+    """Return crops supported by motion or by both adjacent trusted slide panes."""
+    if known_crops is None:
+        known_crops = [None] * len(layouts)
+    else:
+        layouts = [layout if crop is None or (layout is not None and _close_crop(crop, layout.crop, .005)) else None
+                   for layout, crop in zip(layouts, known_crops, strict=True)]
+    confirmed = {}
+    start = 0
+    for end, candidate in enumerate([*layouts, None]):
+        if candidate is not None and _same_container(layouts[start], candidate):
+            continue
+        if end - start >= 3:
+            motion = []
+            for previous, current in zip(layouts[start:end - 1], layouts[start + 1:end]):
+                if _same_slide(previous, current):
+                    camera_delta = cv2.absdiff(previous.camera, current.camera)
+                    if camera_delta.mean() >= 4:
+                        motion.append(np.mean(camera_delta > 16))
+            if sum(value >= .055 for value in motion) >= 2 and any(.055 <= value <= .55 for value in motion):
+                confirmed.update((i, layouts[i].crop) for i in range(start, end) if known_crops[i] is None)
+        start = end if candidate is not None else end + 1
+    for index in range(1, len(layouts) - 1):
+        if index not in confirmed and known_crops[index] is None:
+            crop = _anchored_crop(layouts, known_crops, index)
+            if crop is not None:
+                confirmed[index] = crop
+    return confirmed
 
 
 def detect_region(image):

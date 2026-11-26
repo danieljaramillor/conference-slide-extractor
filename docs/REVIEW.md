@@ -6,7 +6,7 @@
 
 Decisions apply to the two captures in the current suggestion. You can also inspect other combinations within the same group. Return to a suggested comparison to save a decision. If a changed value or distinct content is detected, **Keep both slides** is the available decision.
 
-If a webcam or broadcast frame takes up part of the image, use **Adjust crop** above each preview to select the slide pane. The app compares the updated crops and checks the retained crop in **Slide issues** before export.
+The app crops out separate presenter panes when it can confirm the slide boundary across neighboring screenshots. A presenter overlay that covers the slide or an ambiguous layout can still need review. If a webcam or broadcast frame remains in the preview, use **Adjust crop** above each image to select the slide pane. The app compares the updated crops and checks the retained crop in **Slide issues** before export.
 
 | What you see | What to select |
 | --- | --- |

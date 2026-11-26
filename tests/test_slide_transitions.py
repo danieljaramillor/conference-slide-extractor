@@ -4,7 +4,7 @@ import unittest
 import cv2
 import numpy as np
 
-from slide_transitions import mark_crossfades
+from slide_transitions import capture_runs, mark_crossfades
 
 
 def _frame(seed):
@@ -37,6 +37,18 @@ class TransitionTests(unittest.TestCase):
         evidence = frames[1]['transition']
         self.assertEqual((evidence['kind'], evidence['before'], evidence['after']), ('crossfade', 0, 2))
         self.assertAlmostEqual(evidence['weight'], .64, delta=.01)
+
+    def test_presenter_evidence_stops_at_gaps_and_different_sequences(self):
+        captures = [
+            {'id': 0, 'name': 'day one/Talk A_000021.jpg'},
+            {'id': 1, 'name': 'day one/Talk A_000022.jpg'},
+            {'id': 2, 'name': 'day one/Talk A_000024.jpg'},
+            {'id': 4, 'name': 'day one/Talk A_000025.jpg'},
+            {'id': 5, 'name': 'day one/Talk B_000026.jpg'},
+            {'id': 6, 'name': 'day two/Talk B_000027.jpg'},
+        ]
+        self.assertEqual([[item['id'] for item in run] for run in capture_runs(captures)],
+                         [[0, 1], [2], [4], [5], [6]])
 
     def test_crop_layout_change_registers_the_smaller_pane(self):
         full_capture = np.full_like(self.after, 245)

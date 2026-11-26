@@ -8,7 +8,19 @@ The comparison endpoint produced registered highlights on 34 of the 46 suggested
 
 ## ESMO Screenshots sample
 
-A test ZIP contained 60 captures from three SharePoint folders, with 18 from each of two poster sequences and 24 from a conference session. The scan processed all 60 captures and initially selected 10 slides, each with a native PNG and OCR output. The session included a nine-capture build with two solid reveals and a partially faded reveal. The selected capture preserved the complete workflow diagram. The sample also surfaced a presenter-only change outside the slide pane and a separate pair with different slide content. Use **Adjust crop** in the comparison to isolate the slide in both images when the video pane is included.
+A test ZIP contained 60 captures from three SharePoint folders, with 18 from each of two poster sequences and 24 from a conference session. In v2.9 the scan initially selected 10 slides and raised two suggested comparisons. Presenter motion caused one duplicate.
+
+## Automatic presenter cropping in v2.10
+
+| ZIP | Captures | Result |
+| --- | --- | --- |
+| Original ESMO sample, three folders | 60 | All 24 session captures automatically cropped to 1429 × 804 native pixels. Nine selected slides and zero suggested comparisons or slide issues. The complete workflow build and the separate disclosure slide both stayed selected. |
+| Expanded ESMO sample, six additional folders | 118 | 24 selected slides. The scan recovered one missed crop using its adjacent captures, grouped the duplicate, and retained the chart with both late outlines and a separate build with its full second chart. Two ambiguous frames remained at full size and were flagged in **Slide issues**. |
+| Original conference pilot | 1,450 | All 17 previously verified complete-build selections stayed selected. The same 135 native slide PNGs and their 135 OCR text and 135 OCR JSON files matched v2.9 byte for byte. |
+
+The expanded sample includes two posters, three oral presentations, and a longer session. The representative with both chart outlines came from the final solid reveal. A separate scan using `--builds all` retained the plain chart and both successive outline reveals. The three oral presentations kept their native crops, including an example with three successive reveals and its distinct following slide. One repeated poster table still appeared in multiple groups after OCR split adjacent values.
+
+The crop detector uses stable framing and independent presenter motion across a sequence, or a consistent pane confirmed by two adjacent captures. It keeps the full source capture alongside the crop. Tests cover both pane positions, static layouts, an interruption in capture order, unrelated broadcast framing, and a portrait that belongs to the slide itself.
 
 These figures describe the sampled ZIP. Source screenshots, text, and test exports are kept with the local QA data.
 

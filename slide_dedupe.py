@@ -18,11 +18,12 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from slide_regions import detect_region, extract, quality, recover_projected_screen
-from slide_transitions import EXCLUSION_REASON, mark_crossfades, mark_one_sided_transitions
+from slide_comparison import has_added_chart_outlines
+from slide_regions import confirmed_presenter_crops, detect_region, extract, presenter_layout, quality, recover_projected_screen
+from slide_transitions import EXCLUSION_REASON, capture_runs, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.9.0'
+APP_VERSION = '2.10.0'
 cv2.setNumThreads(1)
 
 
@@ -78,7 +79,7 @@ def features(image):
     return normalized, gray, edges, descriptor
 
 
-def compare(a, b):
+def compare(a, b, read_native=None):
     delta = np.abs(a['gray'].astype(np.int16) - b['gray'].astype(np.int16))
     changed = float(np.mean(delta > 28))
     mae = float(delta.mean() / 255)
@@ -115,12 +116,27 @@ def compare(a, b):
     # as content before comparing size/sharpness of equivalent captures.
     localized_reveal = bool(duplicate and build and not replacement and local_change >= .20
                             and max(cover_a, cover_b) >= .98 and abs(cover_a - cover_b) >= .025)
+    annotation = {}
+    if (read_native is not None and duplicate and build and not replacement and not localized_reveal
+            and .10 <= local_change and max(cover_a, cover_b) >= .985 and abs(cover_a - cover_b) >= .012
+            and a.get('_presenter_pane') and b.get('_presenter_pane') and a['crop'] == b['crop']):
+        first_has_more = cover_b > cover_a
+        earlier, later = (b, a) if first_has_more else (a, b)
+        if has_added_chart_outlines(read_native(earlier), read_native(later)):
+            annotation['prefer_first_for_outline'] = first_has_more
+            localized_reveal = True
     return {'mae': round(mae, 5), 'changed': round(changed, 5),
             'coverage_a': round(cover_a, 4), 'coverage_b': round(cover_b, 4),
             'title_changed': round(title, 5), 'local_change':round(local_change,4),
             'duplicate': duplicate and not replacement and not localized_reveal,
             'build': bool(build and not replacement),
-            'content_replacement': replacement, 'localized_reveal': localized_reveal}
+            'content_replacement': replacement, 'localized_reveal': localized_reveal, **annotation}
+
+
+def slide_features(slide):
+    normalized, gray, edges, descriptor = features(slide)
+    return {**quality(slide), 'normalized': normalized, 'gray': gray, 'edges': edges, 'descriptor': descriptor,
+            'detail': int((edges[54:245] > 0).sum())}
 
 
 def prepare(source, index, name, crop):
@@ -134,16 +150,46 @@ def prepare(source, index, name, crop):
         if recovered is not None:
             region = recovered
             slide = extract(image, region)
-    normalized, gray, edges, descriptor = features(slide)
-    return {'id': index, 'name': name, 'sha256':hashlib.sha256(data).hexdigest(), **region, **quality(slide),
-            'width': image.shape[1], 'height': image.shape[0],
-            'normalized': normalized, 'gray': gray, 'edges': edges, 'descriptor': descriptor,
-            'detail': int((edges[54:245] > 0).sum())}
+    captures_most_of_frame = slide.shape[0] * slide.shape[1] >= .90 * image.shape[0] * image.shape[1]
+    existing_inset_is_reliable = (region['crop_mode'] == 'auto-inset' and region['crop_confidence'] >= .85
+                                  and not region['region_ambiguous'] and not captures_most_of_frame)
+    layout = presenter_layout(image) if not crop and region['quad'] is None and (
+        captures_most_of_frame or existing_inset_is_reliable) else None
+    known_crop = region['crop'] if existing_inset_is_reliable else None
+    presenter_pane = known_crop is not None and layout is not None and max(
+        abs(a - b) for a, b in zip(known_crop, layout.crop)) <= .003
+    return {'id': index, 'name': name, 'sha256': hashlib.sha256(data).hexdigest(), **region, **slide_features(slide),
+            'width': image.shape[1], 'height': image.shape[0], '_presenter_layout': layout,
+            '_presenter_known_crop': known_crop, '_presenter_pane': presenter_pane}
+
+
+def apply_presenter_crops(source, items, pool, thumbs):
+    crops = []
+    for captures in capture_runs(items):
+        layouts = [item.pop('_presenter_layout') for item in captures]
+        known_crops = [item.pop('_presenter_known_crop') for item in captures]
+        crops.extend((captures[index], crop) for index, crop in confirmed_presenter_crops(layouts, known_crops).items())
+
+    def prepare_crop(task):
+        item, crop = task
+        data = source.read(item['name'])
+        if hashlib.sha256(data).hexdigest() != item['sha256']:
+            raise ValueError(f"Source image changed while scanning: {item['name']}")
+        region = {'crop': crop, 'quad': None, 'crop_mode': 'presenter-slide',
+                  'crop_confidence': .94, 'region_ambiguous': False, '_presenter_pane': True}
+        return item, {**region, **slide_features(extract(decode(data), region))}
+
+    for item, cropped in pool.map(prepare_crop, crops):
+        write_image(thumbs / f"{item['id']}.jpg", cropped.pop('normalized'))
+        item.update(cropped)
+    return len(crops)
 
 
 def better_frame(item, ref, metrics):
     if bool(item.get('crossfade')) != bool(ref.get('crossfade')):
         return not item.get('crossfade')
+    if 'prefer_first_for_outline' in metrics:
+        return metrics['prefer_first_for_outline']
     if metrics.get('build') and not metrics.get('duplicate'):
         # Choose the superset, not a noisy earlier frame with higher sharpness.
         if metrics['coverage_b'] > metrics['coverage_a']+.025:
@@ -173,7 +219,8 @@ def run(args):
     if not source.zip and out.is_relative_to(source.path):
         raise ValueError('Output must be outside the input image directory.')
     out.mkdir(parents=True, exist_ok=True)
-    (out / 'thumbs').mkdir(exist_ok=True)
+    thumbs = out / 'thumbs'
+    thumbs.mkdir(exist_ok=True)
     items, errors = [], []
     print(f'Processing {len(source.names)} images with {args.workers} workers...', flush=True)
     def work(pair):
@@ -187,15 +234,18 @@ def run(args):
             if 'error' in item:
                 errors.append(item)
             else:
-                write_image(out / 'thumbs' / f"{item['id']}.jpg", item.pop('normalized'))
+                write_image(thumbs / f"{item['id']}.jpg", item.pop('normalized'))
                 items.append(item)
             if (len(items) + len(errors)) % 200 == 0:
                 print(f'  Read {len(items) + len(errors)}/{len(source.names)}', flush=True)
+        presenter_crops = apply_presenter_crops(source, items, pool, thumbs) if args.crop is None else 0
     read_seconds = time.perf_counter() - start
     if not items:
         raise ValueError(f'No readable images. Errors: {errors[:3]}')
+    def read_native(item):
+        return extract(decode(source.read(item['name'])), item)
     mark_crossfades(items)
-    mark_one_sided_transitions(items, read_capture=lambda item: extract(decode(source.read(item['name'])), item))
+    mark_one_sided_transitions(items, read_capture=read_native)
     transitions = [item for item in items if item.get('transition')]
     transition_ids = {item['id'] for item in transitions}
     eligible = [item for item in items if item['id'] not in transition_ids]
@@ -223,7 +273,7 @@ def run(args):
                 continue
             group = matchable[int(gi)]
             ref = by_id[group['representative']]
-            metrics = compare(item, ref)
+            metrics = compare(item, ref, read_native)
             match = metrics['duplicate'] or (args.builds == 'complete' and metrics['build'])
             if match:
                 score = metrics['mae']
@@ -249,6 +299,7 @@ def run(args):
             matchable.append(group)
     from slide_audit import audit
     groups, candidates, audit_log = audit(source,eligible,groups,decisions,candidates,args,out)
+    audit_log['presenter_crop'] = {'captures': presenter_crops}
     # Keep evidence and each original frame inspectable. Blends did not enter
     # matching or OCR, so they could not bridge two distinct slides.
     transition_exclusions = []

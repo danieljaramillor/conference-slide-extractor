@@ -14,16 +14,20 @@ EXCLUSION_REASON = 'blended slide transition (auto-excluded)'
 ONE_SIDED_REVIEW_REASON = 'possible blend with unique content'
 _TIMESTAMP = re.compile(r'image_(\d\d)-(\d\d)-(\d\d)', re.IGNORECASE)
 _SEQUENCE = re.compile(r'((?:(?:capture|frame|image|screenshot)[_ -]?)?)(\d+)', re.IGNORECASE)
+_DESCRIPTIVE_SEQUENCE = re.compile(r'(.+[_ -])(\d{2,})')
 _PERSPECTIVE = {'auto-perspective', 'projected-screen'}
 
 
-def _clock(item):
+def _clock(item, *, descriptive=False):
     path = PurePosixPath(item['name'].replace('\\', '/'))
     if match := _TIMESTAMP.fullmatch(path.stem):
         hour, minute, second = map(int, match.groups())
         if hour < 24 and minute < 60 and second < 60:
             return (path.parent, 'clock'), hour * 3600 + minute * 60 + second, 10
-    if match := _SEQUENCE.fullmatch(path.stem):
+    match = _SEQUENCE.fullmatch(path.stem)
+    if match is None and descriptive:
+        match = _DESCRIPTIVE_SEQUENCE.fullmatch(path.stem)
+    if match:
         prefix, index = match.groups()
         return (path.parent, prefix.lower()), int(index), 1
     return None
@@ -33,6 +37,20 @@ def _adjacent(left, right, left_clock, right_clock):
     return bool(left_clock and right_clock and left_clock[0] == right_clock[0]
                 and 0 < right_clock[1] - left_clock[1] <= left_clock[2]
                 and ('id' not in left or 'id' not in right or right['id'] == left['id'] + 1))
+
+
+def capture_runs(items):
+    """Yield adjacent captures without crossing filename sequences or missing frames."""
+    run, previous_clock = [], None
+    for item in items:
+        clock = _clock(item, descriptive=True)
+        if run and not _adjacent(run[-1], item, previous_clock, clock):
+            yield run
+            run = []
+        run.append(item)
+        previous_clock = clock
+    if run:
+        yield run
 
 
 @dataclass(frozen=True)
@@ -87,8 +105,10 @@ def _strong(fit):
 
 
 def _same_crop(first, second):
+    first_mode, second_mode = first.get('crop_mode'), second.get('crop_mode')
+    same_mode = first_mode == second_mode or {first_mode, second_mode} == {'auto-inset', 'presenter-slide'}
     return bool(first.get('crop') and second.get('crop')
-                and first.get('crop_mode') == second.get('crop_mode')
+                and same_mode
                 and max(abs(a - b) for a, b in zip(first['crop'], second['crop'])) <= .045)
 
 

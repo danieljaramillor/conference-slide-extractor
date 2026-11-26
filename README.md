@@ -4,6 +4,8 @@ Turn a ZIP of conference screenshots into readable slide images and text. The Wi
 
 The app excludes clear speaker-only camera shots and confirmed blends between slides from the slide export. When a blend may hold the only record of an earlier slide, the app preserves it and flags it in **Slide issues**. **Review excluded captures** lets an operator inspect and restore an automatic exclusion.
 
+For recurring broadcast layouts with a separate presenter pane, the app uses neighboring captures to verify the slide boundary. It crops out the presenter and broadcast graphics before matching slides or reading text. The export keeps the full source screenshot alongside each native-resolution slide image.
+
 ## Install on Windows
 
 1. Open [GitHub Releases](https://github.com/danieljaramillor/conference-slide-extractor/releases/latest). Sign in with an account that has access to this repository.
@@ -14,7 +16,7 @@ The executable bundles Python, the OCR models, and their dependencies. It runs w
 
 ## Process and review a batch
 
-1. Drop a screenshot ZIP into the dashboard or select **Choose ZIP**. Select **Extract slides**, follow its progress in **Batches**, then select **Review slides**.
+1. Drop a screenshot ZIP into the dashboard or select **Choose ZIP**. Keep each session’s screenshots together with their original timestamped or consecutively numbered filenames. Select **Extract slides**, follow its progress in **Batches**, then select **Review slides**.
 2. In **Review builds**, open a group of related captures and pick two to compare. **Highlight changes** marks where content differs when the image alignment is reliable. For a duplicate or additive build, choose **Merge, keep base** or **Merge, keep candidate** to retain the better capture. Use **Keep both slides** when each contains unique information. Click either image to enlarge it, or use **Undo last pair decision** to reverse a choice.
 3. Continue to **Slide issues**. The app puts each flagged slide next to its quality checks. Enlarge it, adjust the crop, or choose another capture. Select **Mark checked and next** when it looks right or **Exclude slide** to omit it from the export.
 4. Continue to **Review deck** to check the included slides in export order. Use **Inspect grouped build** to compare the selected slide with an earlier capture. Use the **Excluded** filter to restore a slide. Edits that create new issues send you back to the relevant check before export.

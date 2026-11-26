@@ -39,7 +39,7 @@ def has_slide_text(item):
 
 
 def is_protected_slide(item):
-    return item['crop_mode'] in {'manual', 'projected-screen'} or has_slide_text(item)
+    return item['crop_mode'] in {'manual', 'projected-screen', 'presenter-slide'} or has_slide_text(item)
 
 
 def speaker_status(detector, slide, item):

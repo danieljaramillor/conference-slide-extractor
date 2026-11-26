@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 from mixed_fixtures import make_slide
-from slide_comparison import compare_captures
+from slide_comparison import compare_captures, has_added_chart_outlines
 from transition_fixtures import slide_build_stages
 
 
@@ -99,6 +99,30 @@ class SlideComparisonTests(unittest.TestCase):
         self.assertEqual(comparison['relationship'], 'content-replaced')
         self.assertTrue(comparison['regions']['left'])
         self.assertTrue(comparison['regions']['right'])
+
+    def test_thin_chart_highlights_have_a_clear_direction(self):
+        earlier = make_slide(1429, 804)
+        first = earlier.copy()
+        cv2.rectangle(first, (67, 165), (690, 601), (24, 153, 229), 4)
+        complete = first.copy()
+        cv2.rectangle(complete, (698, 165), (838, 601), (23, 32, 196), 4)
+        cv2.circle(complete, (1230, 532), 4, (70, 70, 70), -1)
+
+        self.assertTrue(has_added_chart_outlines(earlier, first))
+        self.assertTrue(has_added_chart_outlines(first, complete))
+        self.assertFalse(has_added_chart_outlines(complete, first))
+        self.assertFalse(has_added_chart_outlines(first, first.copy()))
+
+    def test_outline_evidence_rejects_filled_panels_and_value_changes(self):
+        earlier = make_slide(1429, 804, number='47.8')
+        panel = earlier.copy()
+        cv2.rectangle(panel, (1050, 300), (1210, 400), (24, 153, 229), -1)
+        updated = make_slide(1429, 804, number='42.8')
+        cv2.rectangle(updated, (67, 165), (690, 601), (24, 153, 229), 4)
+
+        self.assertFalse(has_added_chart_outlines(earlier, panel))
+        self.assertFalse(has_added_chart_outlines(earlier, updated))
+        self.assertFalse(has_added_chart_outlines(earlier, cv2.resize(updated, (960, 540))))
 
 
 if __name__ == '__main__':

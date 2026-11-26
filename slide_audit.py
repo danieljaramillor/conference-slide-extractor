@@ -81,6 +81,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
     log={'ocr_enabled':getattr(args,'ocr','off')=='on','numeric_splits':[],
          'ocr_merges':[],'suppressed_distinct_pairs':0}
     start=time.perf_counter()
+    def read_native(item):
+        return extract(decode(source.read(item['name'])),item)
     if log['ocr_enabled']:
         targets={g['representative'] for g in groups}
         suspicious=[d for d in decisions if d['reason']=='build' or
@@ -90,7 +92,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
         def work(i):
             item=by_id[i]
             try:
-                slide=extract(decode(source.read(item['name'])),item)
+                slide=read_native(item)
                 return i,read_text(slide,getattr(args,'ocr_cache',Path(__file__).with_name('.cache')/'ocr'))
             except Exception as exc:
                 return i,{'status':'error','error':str(exc)}
@@ -135,7 +137,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 if (min(evidence['text_words_a'],evidence['text_words_b'])<10 or
                     evidence['heading_similarity']<.90 or evidence['numeric_conflict'] or max(ca,cb)<.94):
                     continue
-                metric=compare(a,b)
+                metric=compare(a,b,read_native)
                 if metric['content_replacement']:
                     continue
                 dup=(not metric['localized_reveal'] and min(ca,cb)>.96 and metric['changed']<.06
@@ -148,7 +150,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 if build and not dup:
                     choose_b=cb<ca-.025 # B has additional text: almost all of A occurs in B.
                     if abs(ca-cb)<=.025:
-                        choose_b=better_frame(b,a,compare(b,a))
+                        choose_b=better_frame(b,a,compare(b,a,read_native))
                 else:
                     choose_b=better_frame(b,a,{'duplicate':True})
                 if bool(a.get('crossfade')) != bool(b.get('crossfade')):
