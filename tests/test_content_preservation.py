@@ -69,6 +69,12 @@ class ContentPreservationTests(unittest.TestCase):
             cv2.putText(annotated, label, origin, cv2.FONT_HERSHEY_SIMPLEX, .55, (245, 249, 248), 1, cv2.LINE_AA)
         self.assertEqual(self.scan([table, table, annotated, annotated]), {0: [0, 1], 2: [2, 3]})
 
+        later = annotated.copy()
+        cv2.rectangle(later, (488, 356), (912, 508), (73, 94, 52), -1)
+        cv2.putText(later, 'Larger follow-up panel', (535, 432), cv2.FONT_HERSHEY_SIMPLEX,
+                    1, (245, 249, 248), 2, cv2.LINE_AA)
+        self.assertEqual(self.scan([table, table, later, later]), {0: [0, 1], 2: [2, 3]})
+
 
 if __name__ == '__main__':
     unittest.main()

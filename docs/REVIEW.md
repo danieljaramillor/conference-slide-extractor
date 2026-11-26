@@ -21,7 +21,7 @@ Pair decisions move you to the next unresolved suggestion and save to the batch.
 
 In **Slide issues**, read **What to check** next to the current image. Click the image to enlarge it. Use **Adjust crop** to draw a better slide region, or **Choose another capture** if the group has a better screenshot. Use **Mark checked and next** to approve the current capture and move on. **Exclude slide** omits it from the ZIP. **Undo last issue decision** restores the last slide you marked or excluded in this session.
 
-After applying a crop, check the updated preview before approving it. Export refreshes OCR for changed crops and selected captures that lack text. The ZIP includes `slides/`, `originals/`, `text/`, and `mapping.csv`.
+After applying a crop, check the updated preview before approving it. Export refreshes OCR for changed crops and selected captures that lack text. The ZIP includes `slides/`, `originals/`, `text/`, `mapping.csv`, and `slides.jsonl`. The session text file follows the reviewed deck order and includes text, explicit printed slide numbers when recognized, and reconstructed table rows when supported by the image.
 
 ## Review the deck
 

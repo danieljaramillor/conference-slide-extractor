@@ -137,9 +137,13 @@ def audit(source,items,groups,decisions,candidates,args,out):
                     and min(d.get('coverage_a', 0),d.get('coverage_b', 0))>=.98
                     and a.get('sha256')!=b.get('sha256')
                     and (a['slide_width'],a['slide_height'])==(b['slide_width'],b['slide_height'])):
-                changes = local_numeric_evidence(native_for_comparison(a['id']), native_for_comparison(b['id']))
+                local_occlusions = []
+                changes = local_numeric_evidence(native_for_comparison(a['id']), native_for_comparison(b['id']),
+                                                 occlusions=local_occlusions)
                 if changes:
                     evidence.update(numeric_conflict=True, numeric_changes=changes, numeric_source='native region')
+                elif local_occlusions:
+                    evidence['numeric_occlusions'] = sorted(set(evidence.get('numeric_occlusions', []) + local_occlusions))
             if d['reason']=='duplicate' and not evidence['numeric_conflict']:
                 obscured = evidence.get('numeric_occlusions')
                 if obscured == ['a']:

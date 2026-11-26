@@ -88,6 +88,39 @@ def _uniform_rows(image):
     return np.mean(np.max(np.abs(image - colors), axis=2) < 17)
 
 
+def broadcast_crop_profile(image, crop):
+    """Verify an already observed broadcast crop against this frame's edges."""
+    height, width = image.shape[:2]
+    if width < 320 or height < 180:
+        return None
+    sw = min(width, 480)
+    sh = round(height * sw / width)
+    x1, y1, x2, y2 = [round(value*size) for value, size in zip(crop, (sw, sh, sw, sh))]
+    w, h = x2-x1, y2-y1
+    if not (.54 <= w/sw <= .80 and .60 <= h/sh <= .87 and
+            .05 <= y1/sh <= .24 and .76 <= y2/sh <= .95 and 1.30 <= w/h <= 2.12):
+        return None
+    inset_on_left = x1 <= .085*sw and sw-x2 >= .17*sw
+    inset_on_right = sw-x2 <= .085*sw and x1 >= .17*sw
+    if not (inset_on_left or inset_on_right):
+        return None
+    small = cv2.resize(image, (sw, sh), interpolation=cv2.INTER_AREA)
+    header, footer = small[:y1-2], small[y2+2:]
+    side = small[y1+round(h*.86):y2-2, x2+6:-6] if inset_on_left else small[y1+round(h*.86):y2-2, 6:x1-6]
+    header_color, footer_color, side_color = (np.median(band, axis=(0, 1)) for band in (header, footer, side))
+    if (np.ptp(header_color) < 17 or np.max(np.abs(header_color-footer_color)) < 24
+            or np.max(np.abs(side_color-footer_color)) > 65
+            or min(_uniform_rows(band) for band in (header, footer, side)) < .73):
+        return None
+    edge = x2 if inset_on_left else x1
+    stripes = ((small[y1+2,x1+8:x2-8], small[y1-3,x1+8:x2-8]),
+               (small[y2-3,x1+8:x2-8], small[y2+2,x1+8:x2-8]),
+               (small[y1+8:y2-8,edge-3], small[y1+8:y2-8,edge+2]))
+    if any(np.mean(cv2.absdiff(a,b).max(axis=1) >= 24) < .82 for a,b in stripes):
+        return None
+    return np.vstack([cv2.resize(band, (72, 12), interpolation=cv2.INTER_AREA) for band in (header, footer)])
+
+
 def presenter_layout(image):
     """Collect evidence of a broadcast container, without changing the crop."""
     height, width = image.shape[:2]

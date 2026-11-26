@@ -19,6 +19,9 @@ _local=threading.local()
 _NUMBER = re.compile(r'\d+(?:[.,]\d+)?')
 _SIGNED_NUMBER = re.compile(r'(?<![\w.,])[-+−]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?')
 _COUNT_THEN_PERCENT = re.compile(r'(\d+\s*/\s*\d+)\s*,\s*(?=\d+(?:[.,]\d+)?\s*%)')
+_BIBLIOGRAPHY_PAGES = re.compile(r'(\b(?:19|20)\d{2}\s*[:;, ]\s*\d+\s*:\s*\d+)\s*–\s*-\s*(?=\d+\b)')
+_CITATION = re.compile(r'(?<=\w)[\{\^]\d{1,4}\s*$')
+_AFFILIATION = re.compile(r'\b(?:hospital|university|institute|department|college|cent(?:er|re)|oncology)\b', re.I)
 
 
 def engine():
@@ -81,6 +84,7 @@ def numeric_text(text):
         a,b,c=match.groups()
         return a+c if unicodedata.normalize('NFKC',b)==a else match.group(0)
     text=re.sub(r'(?<=[A-Za-z])(\d)([\u00b2\u00b3\u00b9\u2070-\u2079])([-\u2013]\d)',citation,text)
+    text=_BIBLIOGRAPHY_PAGES.sub(r'\1–', text)
     text=unicodedata.normalize('NFKC',text)
     # Zero/O ambiguity inside a word is not strong evidence of a changed value.
     return re.sub(r'(?<=[A-Za-z])0(?=[A-Za-z]|\b)','o',text).casefold()
@@ -194,12 +198,49 @@ def _same_numeric_pixels(left, right, a, b):
     return True
 
 
-def _cursor_occludes(covered, clear, shorter, longer):
-    if covered.shape != clear.shape or len(shorter['numbers']) != 1 or len(longer['numbers']) != 1:
+def _same_reference_pixels(left, right, a, b):
+    """Allow compression noise in reference markers after checking their ink."""
+    texts = a['text'], b['text']
+    citation = all(_CITATION.search(text) for text in texts)
+    affiliation = all(text.count(',') >= 3 and (re.search(r'[¹²³⁴⁵⁶⁷⁸⁹⁰]', text) or
+                      len(re.findall(r',\s*\d{1,2}\b', text)) >= 3 or
+                      (text.count(';') >= 2 and _AFFILIATION.search(text))) for text in texts)
+    if left.shape != right.shape or not (citation or affiliation):
         return False
-    before = shorter['numbers'][0]
-    after = longer['numbers'][0]
-    if not (0 < len(after) - len(before) <= 2 and after.endswith(before)):
+    x1, y1, x2, y2 = _numeric_box(left.shape, a, b, 2)
+    if x2 - x1 < 5 or y2 - y1 < 5:
+        return False
+    patches = [cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY) for image in (left, right)]
+    delta = cv2.absdiff(*(cv2.GaussianBlur(patch, (3, 3), 0) for patch in patches))
+    # A compact surviving stroke can be a real reference amendment.
+    core = cv2.erode((delta > 12).astype(np.uint8), np.ones((2, 2), np.uint8),
+                     borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    return delta.max() <= 20 and not core.any()
+
+
+def _white_arrow_on_dark(stroke, covered, clear):
+    if np.median(clear) > 135:
+        return False
+    height, width = stroke.shape
+    bright = (stroke > 65) & (covered >= 205)
+    edge_width = max(1, round(.18*width))
+    vertical_outline = np.count_nonzero((stroke[:, :edge_width] < -22).any(axis=1))
+    right_edges = [np.flatnonzero(row)[-1] for row in bright[:round(.68*height)] if row.any()]
+    # The arrow widens diagonally from its tip and leaves a separate lower tail.
+    return (vertical_outline >= .62*height and len(right_edges) >= .43*height
+            and max(right_edges[-2:])-min(right_edges[:2]) >= .30*width
+            and np.count_nonzero(bright[round(.72*height):, width//2:]) >= 2)
+
+
+def _cursor_occludes(covered, clear, shorter, longer):
+    if covered.shape != clear.shape:
+        return False
+    before, after = shorter['numbers'], longer['numbers']
+    removed_token = len(after) == len(before) + 1 and len(after[0]) <= 2 and after[1:] == before
+    shortened = (len(before) == len(after) and sum(x != y for x, y in zip(before, after)) == 1
+                 and any(0 < len(y)-len(x) <= 2 and (y.endswith(x) or y.startswith(x))
+                         for x, y in zip(before, after)))
+    if not (removed_token or shortened):
         return False
     x1, y1, x2, y2 = _numeric_box(covered.shape, shorter, longer, 5)
     if x2 - x1 < 6 or y2 - y1 < 9:
@@ -214,14 +255,21 @@ def _cursor_occludes(covered, clear, shorter, longer):
             continue
         if x > .40 * signed.shape[1] or cv2.countNonZero(mask) - count > 8:
             continue
-        # A Windows arrow leaves a straight left edge, a light interior and a
-        # dark lower tip. Removing a right-aligned leading digit cannot draw it.
+        # The outline is visible even when the white interior is on white paper.
+        # Removing a printed digit cannot add the separate outline and tail.
         stroke = signed[y:y+h, x:x+w]
         left_edge = stroke[:int(.88 * h), :max(1, round(.18 * w))]
-        interior = stroke[:int(.65 * h), max(1, round(.14 * w)):round(.7 * w)]
+        middle = np.s_[:int(.65 * h), max(1, round(.14 * w)):round(.7 * w)]
+        interior = stroke[middle]
+        pale = levels[0][y:y+h, x:x+w][middle] >= 205
         tip = stroke[int(.72 * h):, int(.42 * w):]
+        bright_fill = (np.count_nonzero(interior > 65) >= 4 or np.mean(pale) >= .58
+                       or np.mean(pale[-3:]) >= .72)
         if (np.count_nonzero((left_edge < -65).any(axis=1)) >= .5 * h
-                and np.count_nonzero(interior > 65) >= 4 and np.count_nonzero(tip < -50) >= 4):
+                and bright_fill and np.count_nonzero(tip < -50) >= 4):
+            return True
+        position = np.s_[y:y+h, x:x+w]
+        if _white_arrow_on_dark(stroke, levels[0][position], levels[1][position]):
             return True
     return False
 
@@ -237,7 +285,7 @@ def _recognize_cell(patch):
     return '', 0.
 
 
-def local_numeric_evidence(left, right):
+def local_numeric_evidence(left, right, *, occlusions=None):
     """Reread isolated glyph changes that full-slide OCR could miss."""
     if left.shape != right.shape:
         return []
@@ -264,8 +312,20 @@ def local_numeric_evidence(left, right):
             continue
         if not all(_SIGNED_NUMBER.fullmatch(numeric_text(value)) for value, _ in (a, b)):
             continue
-        if _values(a[0]) != _values(b[0]):
-            return [[a[0], b[0]]]
+        a_values, b_values = (_values(numeric_text(value[0])) for value in (a, b))
+        if a_values == b_values:
+            continue
+        box = ((x1, y1), (x2, y1), (x2, y2), (x1, y2))
+        first, second = ({'box': box, 'numbers': values} for values in (a_values, b_values))
+        if _cursor_occludes(left, right, first, second):
+            if occlusions is not None:
+                occlusions.append('a')
+            continue
+        if _cursor_occludes(right, left, second, first):
+            if occlusions is not None:
+                occlusions.append('b')
+            continue
+        return [[a[0], b[0]]]
     return []
 
 
@@ -282,7 +342,8 @@ def text_evidence(a,b,*,native_pair=None):
                 images = native_pair()
             if images is not None:
                 left, right = images
-                if _same_numeric_pixels(left, right, line_a, line_b):
+                if (_same_numeric_pixels(left, right, line_a, line_b) or
+                        _same_reference_pixels(left, right, line_a, line_b)):
                     continue
                 if _cursor_occludes(left, right, line_a, line_b):
                     numeric_occlusions.append('a')
@@ -295,5 +356,5 @@ def text_evidence(a,b,*,native_pair=None):
     return {'text_cover_a':round(ca,4),'text_cover_b':round(cb,4),
             'heading_similarity':round(heading,4),'numeric_conflict':bool(numeric_changes),
             'numeric_changes':numeric_changes,
-            'numeric_occlusions': numeric_occlusions,
+            'numeric_occlusions': sorted(set(numeric_occlusions)),
             'text_words_a':sum(ta.values()),'text_words_b':sum(tb.values())}

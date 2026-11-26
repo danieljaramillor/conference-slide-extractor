@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import concurrent.futures
 import csv
 from functools import lru_cache
@@ -20,11 +21,12 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from slide_comparison import has_added_chart_outlines, has_local_content_replacement
-from slide_regions import confirmed_presenter_crops, detect_region, extract, presenter_layout, quality, recover_projected_screen
+from slide_regions import broadcast_crop_profile, confirmed_presenter_crops, detect_region, extract, presenter_layout, quality, recover_projected_screen
+from slide_text import SESSION_TEXT, slide_text_record
 from slide_transitions import EXCLUSION_REASON, capture_runs, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.11.0'
+APP_VERSION = '2.12.0'
 cv2.setNumThreads(1)
 
 
@@ -126,13 +128,19 @@ def compare(a, b, read_native=None):
         if has_added_chart_outlines(read_native(earlier), read_native(later)):
             annotation['prefer_first_for_outline'] = first_has_more
             localized_reveal = True
-    if (read_native is not None and not replacement and not annotation and .09 <= local_change
-            and changed < .10 and max(cover_a, cover_b) >= .94 and min(cover_a, cover_b) >= .80
+    trusted_crop = min(a.get('crop_confidence', 0), b.get('crop_confidence', 0)) >= .85
+    small_replacement = (changed < .10 and local_change >= .09
+                         and max(cover_a, cover_b) >= .94 and min(cover_a, cover_b) >= .80)
+    # An opaque callout may overwrite a label while a much larger panel appears
+    # beside it. The panel can dominate global counts even in a verified crop.
+    wide_build = (build and trusted_crop and changed < .20 and local_change >= .60
+                  and max(cover_a, cover_b) >= .975 and not small_replacement)
+    if (read_native is not None and not replacement and not annotation and (small_replacement or wide_build)
             and a.get('crop') == b.get('crop') and a.get('quad') is None and b.get('quad') is None
             and a.get('slide_width') == b.get('slide_width') and a.get('slide_height') == b.get('slide_height')):
-        check_overlays = (.008 <= changed and local_change >= .30
-                          and min(a.get('crop_confidence', 0), b.get('crop_confidence', 0)) >= .85)
-        replacement = has_local_content_replacement(read_native(a), read_native(b), check_overlays=check_overlays)
+        check_overlays = wide_build or (.008 <= changed and local_change >= .30 and trusted_crop)
+        replacement = has_local_content_replacement(read_native(a), read_native(b),
+                                                    check_overlays=check_overlays, overlays_only=wide_build)
     return {'mae': round(mae, 5), 'changed': round(changed, 5),
             'coverage_a': round(cover_a, 4), 'coverage_b': round(cover_b, 4),
             'title_changed': round(title, 5), 'local_change':round(local_change,4),
@@ -172,11 +180,41 @@ def prepare(source, index, name, crop):
 
 
 def apply_presenter_crops(source, items, pool, thumbs):
+    anchors = defaultdict(list)
+    for item in items:
+        if item['_presenter_known_crop'] is not None and item['crop_confidence'] >= .90:
+            anchors[item['_presenter_known_crop']].append(item)
     crops = []
     for captures in capture_runs(items):
         layouts = [item.pop('_presenter_layout') for item in captures]
         known_crops = [item.pop('_presenter_known_crop') for item in captures]
         crops.extend((captures[index], crop) for index, crop in confirmed_presenter_crops(layouts, known_crops).items())
+
+    # A slide can defeat single-frame detection while still sitting inside the
+    # same verified broadcast layout, particularly during a camera cut.
+    resolved = {item['id'] for item, _ in crops}
+    unresolved = [item for item in items if item['id'] not in resolved and item.get('quad') is None
+                  and item['slide_pixels'] >= .90*item['width']*item['height']]
+    profiles = []
+    for crop, frames in anchors.items():
+        if not unresolved or len(frames) < 3:
+            continue
+        indices = np.linspace(0, len(frames)-1, min(8, len(frames)), dtype=int)
+        sampled = [profile for index in indices if (profile := broadcast_crop_profile(
+            decode(source.read(frames[index]['name'])), crop)) is not None]
+        for profile in sampled:
+            if sum(np.mean(cv2.absdiff(profile, other)) <= 4 for other in sampled) >= 3:
+                profiles.append((crop, profile))
+                break
+
+    def verify_layout(item):
+        image = decode(source.read(item['name']))
+        matches = [crop for crop, anchor in profiles if (observed := broadcast_crop_profile(image, crop)) is not None
+                   and np.mean(cv2.absdiff(observed, anchor)) <= 4]
+        return (item, matches[0]) if len(matches) == 1 else None
+
+    if profiles:
+        crops.extend(task for task in pool.map(verify_layout, unresolved) if task is not None)
 
     def prepare_crop(task):
         item, crop = task
@@ -385,7 +423,8 @@ def export(source, manifest, dest, overrides=None, crops=None):
     (dest / 'text').mkdir(exist_ok=True)
     images = {i['id']: i for i in manifest['images']}
     groups = [g for g in (overrides if overrides is not None else manifest['groups']) if not g.get('excluded')]
-    with (dest / 'mapping.csv').open('w', newline='', encoding='utf-8-sig') as f:
+    with ((dest / 'mapping.csv').open('w', newline='', encoding='utf-8-sig') as f,
+          (dest / SESSION_TEXT).open('w', encoding='utf-8', newline='\n') as session_text):
         writer = csv.writer(f)
         writer.writerow(['slide', 'selected_source', 'member_source', 'crop_x1', 'crop_y1', 'crop_x2', 'crop_y2',
                          'slide_width','slide_height','quality_flags','quad_json'])
@@ -415,6 +454,8 @@ def export(source, manifest, dest, overrides=None, crops=None):
             if item.get('ocr',{}).get('status')=='ok':
                 (dest / 'text' / f'{seq:04d}.txt').write_text(item['ocr']['text'],encoding='utf-8')
                 (dest / 'text' / f'{seq:04d}.json').write_text(json.dumps(item['ocr'],ensure_ascii=False,indent=2),encoding='utf-8')
+            session_text.write(json.dumps(slide_text_record(seq, item['name'], slide, item.get('ocr', {})),
+                                          ensure_ascii=False, separators=(',', ':')) + '\n')
             for member in group['members']:
                 writer.writerow([seq, item['name'], images[member]['name'], *item['crop'],slide.shape[1],slide.shape[0],
                                  '; '.join(group.get('review_reasons',[])),json.dumps(item.get('quad'))])

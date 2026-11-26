@@ -13,6 +13,24 @@ from test_ocr_numeric import _capture
 
 
 class TableRegressions(unittest.TestCase):
+    def test_bibliography_dash_noise_does_not_change_cited_pages(self):
+        first = _capture(('J Oncol 2024: 10:25–-31', 160, 20))
+        second = _capture(('J Oncol 2024: 10:25–31', 160, 20))
+        changed = _capture(('J Oncol 2024: 10:25–32', 160, 20))
+        self.assertFalse(text_evidence(first, second)['numeric_conflict'])
+        self.assertTrue(text_evidence(first, changed)['numeric_conflict'])
+
+    def test_citation_marker_requires_matching_native_ink(self):
+        first = _capture(('Study evidence{1', 160, 20))
+        second = _capture(('Study evidence^11', 160, 20))
+        clear = np.full((800, 1440, 3), 248, np.uint8)
+        artifact = clear.copy()
+        artifact[177, 690] = 218
+        changed = clear.copy()
+        changed[169:174, 687:690] = 30
+        self.assertFalse(text_evidence(first, second, native_pair=lambda: (artifact, clear))['numeric_conflict'])
+        self.assertTrue(text_evidence(first, second, native_pair=lambda: (changed, clear))['numeric_conflict'])
+
     def test_comma_spacing_cannot_split_a_count_and_percentage(self):
         compact = _capture(('17/24,70.8%', 160, 20))
         spaced = _capture(('17/24, 70.8%', 160, 20))

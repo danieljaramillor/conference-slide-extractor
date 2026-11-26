@@ -26,6 +26,12 @@ The executable bundles Python, the OCR models, and their dependencies. It runs w
 
 **Capture quality matters.** The app preserves available source pixels. Small, blurry, or compressed text can still be misread. Verify critical numbers against the original slide. If different chart or table frames contain unique data, keep each frame unless one capture includes all the content.
 
+### Session text and tables
+
+Each scan and reviewed ZIP includes `slides.jsonl`, a UTF-8 text file with one JSON record per included slide. `slide_number` is its one-based export position and matches its filename and `mapping.csv`. `printed_slide_number` is filled when OCR recognizes an explicit slide or page label near the slide edge. The record also includes `source`, `ocr_status`, the full recognized `text`, and `tables`.
+
+Tables store rows as arrays of text cells in reading order. The app uses visible grid lines or consistent alignment of recognized labels and numbers. `null` marks an unassigned grid cell. `partial` and `inferred_rows` indicate where the structure or coverage merits a check. Complex, merged, or unreadable cells may remain in the full slide text and image. The per-slide `.txt` and OCR coordinate files remain in `text/`.
+
 ## Where files are stored
 
 The app stores per-batch inputs, results, review decisions, logs, and OCR cache under `%LOCALAPPDATA%\Conference Slide Extractor\batches`. Paste that path into File Explorer to find it. Keep the same Windows user and data folder when replacing the executable with a new release. To choose a different data folder, run the executable with `--data`.
@@ -45,5 +51,7 @@ For a job runner, scan an already complete archive directly. Use a fresh output 
 ```powershell
 .\ConferenceSlideExtractor-Windows-x64.exe scan 'D:\Incoming\session.zip' --output 'D:\Results\session-001'
 ```
+
+Find the session text file at `D:\Results\session-001\selected\slides.jsonl`.
 
 See [review and troubleshooting](docs/REVIEW.md), [grouped build QC](docs/BUILD-REVIEW-QC.md), [transition and build QC](docs/TRANSITION-QC.md), [speaker exclusion QC](docs/SPEAKER-QC.md), [build instructions](docs/BUILD.md), and the [scaling plan](SCALING.md).

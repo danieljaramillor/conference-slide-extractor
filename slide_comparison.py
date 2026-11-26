@@ -129,7 +129,7 @@ def _overwrites_printed_content(left, right, delta, lost, added):
     return False
 
 
-def has_local_content_replacement(left, right, *, check_overlays=False):
+def has_local_content_replacement(left, right, *, check_overlays=False, overlays_only=False):
     """Find a replaced text or chart region inside otherwise matching captures."""
     if left.shape != right.shape:
         return False
@@ -150,6 +150,8 @@ def has_local_content_replacement(left, right, *, check_overlays=False):
                    for old, new in ((left_edges, right_edges), (right_edges, left_edges)))
     if check_overlays and _overwrites_printed_content(left, right, delta, lost, added):
         return True
+    if overlays_only:
+        return False
     gray_left, gray_right = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) for image in (left, right))
     for x1, y1, x2, y2 in regions:
         region = np.s_[y1:y2, x1:x2]

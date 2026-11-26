@@ -1,5 +1,6 @@
 """Verify scan and export files against a completed batch and its original captures."""
 import argparse
+from contextlib import nullcontext
 import csv
 import json
 from pathlib import Path
@@ -23,11 +24,16 @@ def check(batch, export_directory=None):
     groups = [group for group in decision['groups'] if not group.get('excluded')]
     crops = decision.get('crops', {})
     originals, slides, text_files = set(), set(), set()
+    session_path = output / 'slides.jsonl'
+    version = manifest.get('program_version')
+    if version and tuple(int(part) for part in version.split('.')) >= (2,12,0):
+        assert session_path.is_file(), session_path
 
     source = Source(manifest['source'])
     text_count = 0
     try:
-        with (output / 'mapping.csv').open(encoding='utf-8-sig', newline='') as mapping:
+        records = session_path.open(encoding='utf-8') if session_path.is_file() else nullcontext()
+        with (output / 'mapping.csv').open(encoding='utf-8-sig', newline='') as mapping, records as session:
             rows = iter(csv.DictReader(mapping))
             for position, group in enumerate(groups, 1):
                 item = images[group['representative']]
@@ -53,15 +59,27 @@ def check(batch, export_directory=None):
                     assert (int(row['slide_height']), int(row['slide_width'])) == native.shape[:2]
                     assert [float(row[key]) for key in ('crop_x1', 'crop_y1', 'crop_x2', 'crop_y2')] == item['crop']
                 text_path = output / 'text' / (sequence + '.txt')
+                session_text = None
                 if not decision_path.exists() and item.get('ocr', {}).get('status') == 'ok':
                     assert text_path.is_file(), sequence
                 if text_path.is_file():
                     record = text_path.with_suffix('.json')
                     text = json.loads(record.read_text(encoding='utf-8'))
                     assert text_path.read_text(encoding='utf-8') == text['text'], sequence
+                    session_text = text['text']
                     text_files.update((text_path.name, record.name))
                     text_count += 1
+                if session is not None:
+                    entry = json.loads(next(session))
+                    assert (entry['slide_number'], entry['source'], entry['text']) == (position, item['name'], session_text), sequence
+                    assert (entry['ocr_status'] == 'ok') == text_path.is_file(), sequence
+                    for table in entry['tables']:
+                        x1, y1, x2, y2 = table['bounds']
+                        assert 0 <= x1 < x2 <= native.shape[1] and 0 <= y1 < y2 <= native.shape[0], (sequence, table)
+                        assert len(table['rows']) >= 2 and len({len(row) for row in table['rows']}) == 1, (sequence, table)
             assert next(rows, None) is None, 'Unexpected rows after the final selected group'
+            if session is not None:
+                assert next(session, None) is None, 'Unexpected session text after the final slide'
     finally:
         source.close()
 

@@ -9,6 +9,7 @@ import threading
 import unittest
 import urllib.request
 import urllib.error
+import zipfile
 
 import cv2
 import numpy as np
@@ -59,6 +60,11 @@ class ReviewServerTests(unittest.TestCase):
                 result=json.load(urllib.request.urlopen(request))
                 self.assertEqual(result['count'],1)
                 self.assertTrue((root/'out'/result['download']).is_file())
+                with zipfile.ZipFile(root/'out'/result['download']) as bundle:
+                    text_record = json.loads(bundle.read('slides.jsonl'))
+                    self.assertEqual(text_record['slide_number'], 1)
+                    self.assertEqual(text_record['source'], '1.png')
+                    self.assertIsNone(text_record['text'])
                 final=cv2.imread(str(Path(result['directory'])/'slides/0001.png'))
                 np.testing.assert_array_equal(final,crop)
                 decision['crops']['0']=[0,0,float('nan'),1]
