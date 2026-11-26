@@ -1,0 +1,59 @@
+name: Publish Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: 'Run ID of the tested Windows build'
+        required: true
+        type: string
+      release_id:
+        description: 'Numeric ID of the draft release from the GitHub Releases API'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-2025
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_RUN: ${{ inputs.build_run }}
+      RELEASE_ID: ${{ inputs.release_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run }}
+          name: ConferenceSlideExtractor-Windows-x64
+          path: dist
+      - name: Verify and publish
+        shell: pwsh
+        run: |
+          if ($env:BUILD_RUN -notmatch '^\d+$' -or $env:RELEASE_ID -notmatch '^\d+$') { throw 'Expected numeric GitHub IDs' }
+          $api = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY"
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2026-03-10' }
+          $run = Invoke-RestMethod "$api/actions/runs/$env:BUILD_RUN" -Headers $headers
+          $jobs = Invoke-RestMethod "$api/actions/runs/$env:BUILD_RUN/jobs" -Headers $headers
+          if ($run.path -notlike '.github/workflows/build-windows.yml*' -or !($jobs.jobs | Where-Object { $_.name -eq 'windows' -and $_.conclusion -eq 'success' })) { throw 'The Windows build and smoke test must pass' }
+          $releaseUrl = "$api/releases/$env:RELEASE_ID"
+          $release = Invoke-RestMethod $releaseUrl -Headers $headers
+          if (!$release.draft -or $release.tag_name -notmatch '^v\d+\.\d+\.\d+$') { throw 'A versioned draft release is required' }
+          $upload = $release.upload_url.Split('{')[0]
+          if (([uri]$upload).Host -ne 'uploads.github.com') { throw 'Unexpected upload host' }
+          $exe = 'ConferenceSlideExtractor-Windows-x64.exe'
+          $checksum = 'SHA256SUMS.txt'
+          $hash = (Get-FileHash -LiteralPath "dist/$exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if (!(Get-Content -LiteralPath "dist/$checksum").StartsWith($hash)) { throw 'The executable checksum differs from the build artifact' }
+          foreach ($name in @($exe, $checksum)) {
+            if ($release.assets | Where-Object { $_.name -eq $name -and $_.state -eq 'uploaded' }) { throw "Draft already contains $name" }
+            $asset = Invoke-RestMethod "$($upload)?name=$name" -Headers $headers -Method Post -ContentType 'application/octet-stream' -InFile "dist/$name"
+            if ($asset.state -ne 'uploaded' -or $asset.size -ne (Get-Item "dist/$name").Length) { throw "Upload verification failed for $name" }
+          }
+          $body = @{ draft = $false; target_commitish = $run.head_sha; make_latest = 'true' } | ConvertTo-Json
+          $published = Invoke-RestMethod $releaseUrl -Headers $headers -Method Patch -ContentType 'application/json' -Body $body
+          if ($published.draft -or $published.assets.Count -ne 2) { throw 'Release did not publish with both assets' }
+          Write-Host $published.html_url

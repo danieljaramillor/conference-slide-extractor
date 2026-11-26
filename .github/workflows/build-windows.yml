@@ -2,11 +2,6 @@ name: Build Windows executable
 
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: 'Existing draft release tag to publish. Leave blank to build only.'
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -35,27 +30,3 @@ jobs:
             dist/ConferenceSlideExtractor-Windows-x64.exe
             dist/SHA256SUMS.txt
           if-no-files-found: error
-  publish:
-    if: inputs.release_tag != ''
-    needs: windows
-    runs-on: windows-2025
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ConferenceSlideExtractor-Windows-x64
-          path: dist
-      - name: Upload and publish the verified draft
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected a version tag such as v2.2.0' }
-          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or !$release.isDraft) { throw 'An existing draft release is required' }
-          gh release upload $env:RELEASE_TAG dist/ConferenceSlideExtractor-Windows-x64.exe dist/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft false --latest
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
