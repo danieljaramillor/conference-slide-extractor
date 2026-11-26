@@ -102,7 +102,34 @@ def _has_replacement(left_edges, right_edges, changed):
     return True
 
 
-def has_local_content_replacement(left, right):
+def _flat_color_fractions(image):
+    colors = (image[::2, ::2].reshape(-1, 3) // 16).astype(np.int32)
+    palette = np.bincount(colors @ [1, 16, 256], minlength=4096)
+    return palette.max() / len(colors), np.partition(palette, -3)[-3:].sum() / len(colors)
+
+
+def _overwrites_printed_content(left, right, delta, lost, added):
+    """Detect a solid callout drawn over ink already present on the slide."""
+    height, width = delta.shape
+    closed = cv2.morphologyEx((delta > 24).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if (not max(14, .075 * width) <= w <= .55 * width or h < max(14, .045 * height)
+                or cv2.contourArea(contour) < .72 * w * h):
+            continue
+        region = np.s_[y+5:y+h-5, x+5:x+w-5]
+        # Ignore the border. A callout must both erase ink and add new interior ink.
+        if min(np.count_nonzero(lost[region]), np.count_nonzero(added[region])) < 150:
+            continue
+        flat = [_flat_color_fractions(image[region]) for image in (left, right)]
+        if (min(total for _, total in flat) >= .34
+                and any(dominant >= .29 and total >= .50 for dominant, total in flat)):
+            return True
+    return False
+
+
+def has_local_content_replacement(left, right, *, check_overlays=False):
     """Find a replaced text or chart region inside otherwise matching captures."""
     if left.shape != right.shape:
         return False
@@ -121,6 +148,8 @@ def has_local_content_replacement(left, right):
     kernel = np.ones((3, 3), np.uint8)
     lost, added = (old & ~(cv2.dilate(new.astype(np.uint8), kernel) > 0) & expanded_change
                    for old, new in ((left_edges, right_edges), (right_edges, left_edges)))
+    if check_overlays and _overwrites_printed_content(left, right, delta, lost, added):
+        return True
     gray_left, gray_right = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) for image in (left, right))
     for x1, y1, x2, y2 in regions:
         region = np.s_[y1:y2, x1:x2]
@@ -136,18 +165,13 @@ def has_local_content_replacement(left, right):
         old, new = gray_left[region], gray_right[region]
         signed = old.astype(np.int16) - new.astype(np.int16)
         lighter, darker = np.count_nonzero(signed > 25), np.count_nonzero(signed < -25)
-        # Fade-ins and opaque overlays produce changes almost entirely in
-        # one direction. A countdown can also erase far more ink than it adds.
+        # Fade-ins often change brightness in one direction. A countdown can
+        # also erase far more ink than it adds.
         if min(lighter, darker) < max(85, max(lighter, darker) * .25):
             continue
         # A slide region usually has a small set of flat colors. Do not
         # treat presenter movement or video within a slide as replaced text.
-        for image in (left, right):
-            colors = (image[region][::2, ::2].reshape(-1, 3) // 16).astype(np.int32)
-            palette = np.bincount(colors @ [1, 16, 256], minlength=4096)
-            if np.partition(palette, -3)[-3:].sum() < .67 * len(colors):
-                break
-        else:
+        if all(_flat_color_fractions(image[region])[1] >= .67 for image in (left, right)):
             # A small geometric shift can occur when a new footer or QR code moves
             # surrounding text. Check the affected region for matching structure.
             window = cv2.createHanningWindow((x2 - x1, y2 - y1), cv2.CV_32F)

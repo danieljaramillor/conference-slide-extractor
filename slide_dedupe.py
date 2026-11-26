@@ -130,7 +130,9 @@ def compare(a, b, read_native=None):
             and changed < .10 and max(cover_a, cover_b) >= .94 and min(cover_a, cover_b) >= .80
             and a.get('crop') == b.get('crop') and a.get('quad') is None and b.get('quad') is None
             and a.get('slide_width') == b.get('slide_width') and a.get('slide_height') == b.get('slide_height')):
-        replacement = has_local_content_replacement(read_native(a), read_native(b))
+        check_overlays = (.008 <= changed and local_change >= .30
+                          and min(a.get('crop_confidence', 0), b.get('crop_confidence', 0)) >= .85)
+        replacement = has_local_content_replacement(read_native(a), read_native(b), check_overlays=check_overlays)
     return {'mae': round(mae, 5), 'changed': round(changed, 5),
             'coverage_a': round(cover_a, 4), 'coverage_b': round(cover_b, 4),
             'title_changed': round(title, 5), 'local_change':round(local_change,4),
