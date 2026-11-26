@@ -337,7 +337,7 @@ summary, label:has(input[type=checkbox], input[type=radio]) { cursor: pointer; }
 .issue-inspector details { margin-top: 12px; font-size: 13px; }
 .issue-inspector .members { margin-top: 8px; max-height: 320px; }
 .member .preview-button { margin-block: 7px; border-radius: 8px; overflow: hidden; }
-.deck-heading { margin-bottom: 12px; }
+.deck-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
 .export-panel { padding: clamp(20px, 4vw, 44px); border-radius: 23px; }
 .export-panel .export-area { margin-top: 17px; }
 .workflow-footer {

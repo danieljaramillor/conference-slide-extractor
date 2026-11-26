@@ -9,8 +9,7 @@ import zipfile
 from playwright.sync_api import sync_playwright
 
 
-def check(program, python, fixture, screenshot):
-    chrome = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
+def check(program, python, fixture, screenshot, browser_channel='chrome'):
     # Windows can briefly hold the input ZIP after stopping the frozen process.
     with tempfile.TemporaryDirectory(prefix='extractor-ui-', ignore_cleanup_errors=True) as directory:
         frozen = program.suffix.lower() == '.exe'
@@ -18,9 +17,12 @@ def check(program, python, fixture, screenshot):
         proc = subprocess.Popen([*launch, '--data', directory, '--workers', '2', '--ocr-workers', '2'],
                                 cwd=directory, stdout=subprocess.PIPE, text=True, encoding='utf-8')
         try:
-            url = proc.stdout.readline().split()[1]
+            startup = proc.stdout.readline()
+            if not startup.startswith('Open http://127.0.0.1:'):
+                raise RuntimeError(f'Unexpected application startup: {startup.strip() or "no output"}')
+            url = startup.split()[1]
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(executable_path=chrome, headless=True)
+                browser = playwright.chromium.launch(channel=browser_channel, headless=True)
                 page = browser.new_page(viewport={'width': 1320, 'height': 920}, accept_downloads=True)
                 errors, external = [], []
                 page.on('pageerror', lambda error: errors.append(str(error)))
@@ -54,7 +56,7 @@ def check(program, python, fixture, screenshot):
                 page.screenshot(path=str(screenshot))
                 page.get_by_role('link', name='Review slides').click()
                 page.locator('#slides-tab').click()
-                page.locator('#filter').select_option('all')
+                assert page.locator('#filter').input_value() == 'included'
                 page.wait_for_function("document.querySelectorAll('.card').length === 4", timeout=8000)
                 page.locator('#grid [data-zoom]').first.click()
                 page.wait_for_function("document.querySelector('#lightbox img').naturalWidth >= 1280")

@@ -9,6 +9,7 @@ try {
     & $Python -m PyInstaller --noconfirm --onefile --noupx --workpath $workDirectory --distpath $OutputDirectory `
         --name ConferenceSlideExtractor-Windows-x64 `
         --add-data 'batch_app.html:.' --add-data 'review_template.html:.' --add-data 'review.js:.' --add-data 'app.css:.' `
+        --add-data 'assets/yunet:assets/yunet' `
         --collect-data rapidocr --collect-data cv2 --collect-binaries onnxruntime `
         --hidden-import rapidocr.inference_engine.onnxruntime `
         --copy-metadata rapidocr --copy-metadata onnxruntime --copy-metadata opencv-python-headless `

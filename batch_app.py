@@ -40,7 +40,12 @@ class Batches:
     @staticmethod
     def summary(directory):
         manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
-        return {'stats': manifest['stats'], 'ocr_errors': manifest.get('audit', {}).get('ocr_errors', 0)}
+        audit = manifest.get('audit', {})
+        summary = {'stats': manifest['stats'], 'ocr_errors': audit.get('ocr_errors', 0)}
+        if speaker := audit.get('speaker_detection'):
+            summary['speaker_check'] = speaker['status']
+            summary['speaker_excluded'] = len(speaker['auto_excluded'])
+        return summary
 
     def write_status(self, job, status):
         temporary = job / 'batch.tmp'

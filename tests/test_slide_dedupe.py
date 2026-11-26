@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import cv2
@@ -39,6 +40,34 @@ def broadcast(im, speaker):
 
 
 class MatchingTests(unittest.TestCase):
+    def test_review_identity_changes_when_exclusions_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            source.mkdir()
+            (source / 'slide.png').write_bytes(cv2.imencode('.png', slide())[1].tobytes())
+            args = argparse.Namespace(input=str(source), output=str(root / 'first'),
+                                      workers=1, crop=None, builds='complete', ocr='off')
+            with contextlib.redirect_stdout(io.StringIO()):
+                sd.run(args)
+            first = json.loads((root / 'first/manifest.json').read_text(encoding='utf-8'))
+            args.output = str(root / 'second')
+
+            def exclude_group(source, items, groups, decisions, candidates, args, output):
+                groups[0]['excluded'] = True
+                return groups, candidates, {}
+
+            with patch('slide_audit.audit', side_effect=exclude_group), contextlib.redirect_stdout(io.StringIO()):
+                sd.run(args)
+            second = json.loads((root / 'second/manifest.json').read_text(encoding='utf-8'))
+            old_decision = {key: first[key] for key in ('source', 'manifest_id', 'groups')}
+            self.assertEqual(first['images'][0]['sha256'], second['images'][0]['sha256'])
+            self.assertNotEqual(first['manifest_id'], second['manifest_id'])
+            self.assertEqual(second['stats']['selected'], 0)
+            self.assertFalse(list((root / 'second/selected/slides').glob('*.png')))
+            with self.assertRaisesRegex(ValueError, 'different scan'):
+                sd.validate_review(second, old_decision)
+
     def test_duplicate_compression(self):
         a = slide()
         b = cv2.imdecode(cv2.imencode('.jpg', a, [cv2.IMWRITE_JPEG_QUALITY, 80])[1], 1)

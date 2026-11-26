@@ -86,8 +86,11 @@
     </section>
     <section id="slide-view" hidden aria-label="Browse slides">
       <div class="deck-heading">
-        <h2 id="deck-title" tabindex="-1">Review the deck</h2>
-        <p>Check the included slides in the order they’ll appear in the ZIP.</p>
+        <div>
+          <h2 id="deck-title" tabindex="-1">Review the deck</h2>
+          <p id="deck-description">Check the included slides in the order they’ll appear in the ZIP.</p>
+        </div>
+        <button id="show-excluded" aria-controls="grid" hidden>Review excluded captures</button>
       </div>
       <div class="controls toolbar glass">
         <select id="filter" aria-label="Group filter">

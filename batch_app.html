@@ -89,6 +89,10 @@
         if (batch.state === 'ready') {
           const stats = batch.stats;
           details.textContent = `${stats.processed}/${stats.input_images} captures processed · ${stats.selected} selected · ${stats.needs_review} to check`;
+          if (batch.speaker_excluded) details.textContent += ` · ${batch.speaker_excluded} speaker-only excluded`;
+          if (batch.speaker_check === 'partial' || batch.speaker_check === 'unavailable') {
+            details.textContent += ' · Speaker check incomplete';
+          }
           if (batch.ocr_errors) details.textContent += ` · ${batch.ocr_errors} OCR errors`;
           const link = document.createElement('a');
           link.className = 'action';

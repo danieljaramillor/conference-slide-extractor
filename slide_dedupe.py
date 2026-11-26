@@ -21,7 +21,7 @@ from PIL import Image, ImageOps
 from slide_regions import detect_region, extract, quality, recover_projected_screen
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.5.0'
+APP_VERSION = '2.6.0'
 cv2.setNumThreads(1)
 
 
@@ -287,7 +287,13 @@ def run(args):
                 'runtime':{'python':platform.python_version(),'opencv':cv2.__version__,'numpy':np.__version__},'images': metadata,
                 'groups': groups, 'decisions': decisions, 'review_pairs': sorted(unique_pairs.values(), key=lambda c:c['mae']),
                 'errors': errors,'audit':audit_log}
-    manifest['manifest_id']=hashlib.sha256(json.dumps({'images':[(i['id'],i['sha256'],i['crop'],i.get('quad')) for i in metadata]},sort_keys=True).encode()).hexdigest()
+    # Scope saved decisions to the recommendations as well as the source pixels.
+    review_inputs = {
+        'images': [(i['id'], i['sha256'], i['crop'], i.get('quad')) for i in metadata],
+        'groups': groups,
+        'pairs': manifest['review_pairs'],
+    }
+    manifest['manifest_id'] = hashlib.sha256(json.dumps(review_inputs, sort_keys=True).encode()).hexdigest()
     print('Writing native-resolution slides and text...', flush=True)
     export(source, manifest, out / 'selected')
     elapsed = time.perf_counter() - start

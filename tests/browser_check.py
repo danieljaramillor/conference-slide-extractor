@@ -49,10 +49,12 @@ def check(report_path):
             page.locator('#merge').click()
             assert page.locator('.card').count() == count
         excluded_before=page.evaluate('groups.filter(g=>g.excluded).length')
-        was_excluded=page.locator('[data-exclude]').first.is_checked()
-        page.locator('[data-exclude]').first.check()
-        page.locator('#filter').select_option('excluded')
-        assert page.locator('.card').count() == excluded_before+int(not was_excluded)
+        exclude = page.locator('[data-exclude]').first
+        excluded_id = int(exclude.get_attribute('data-exclude'))
+        exclude.click()
+        page.locator('#show-excluded').click()
+        assert page.locator('.card').count() == excluded_before+1
+        assert page.locator(f'[data-restore="{excluded_id}"]').is_visible()
         page.locator('#filter').select_option('all')
         page.get_by_text('Review file', exact=True).click()
         with page.expect_download() as downloaded:
@@ -65,9 +67,12 @@ def check(report_path):
         page.locator('#loadfile').set_input_files(decision_file)
         page.wait_for_function("document.getElementById('status').textContent==='Decisions loaded'")
         page.reload()
-        page.wait_for_function("typeof groups !== 'undefined' && groups[0].excluded === true")
+        page.wait_for_function("id => typeof groups !== 'undefined' && groups.find(group => group.id === id).excluded", arg=excluded_id)
         clear_queues(page)
         page.locator('#slides-tab').click()
+        page.locator('#show-excluded').click()
+        page.locator(f'[data-restore="{excluded_id}"]').click()
+        assert page.evaluate('id => !groups.find(group => group.id === id).excluded', excluded_id)
         page.locator('#filter').select_option('all')
         page.locator('#search').fill('no-such-file-123456789')
         assert page.locator('.card').count() == 0

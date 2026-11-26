@@ -2,6 +2,8 @@
 
 Turn a ZIP of conference screenshots into readable slide images and text. The Windows app detects slide regions, groups repeat captures, and opens possible duplicates and slide builds side by side for review. Processing and OCR run on your computer.
 
+The app excludes clear speaker-only camera shots from the slide export. **Slide issues** flags uncertain captures, and **Review excluded captures** lets an operator inspect and restore an automatic exclusion.
+
 ## Install on Windows
 
 1. Open [GitHub Releases](https://github.com/danieljaramillor/conference-slide-extractor/releases/latest). Sign in with an account that has access to this repository.
@@ -24,7 +26,7 @@ The executable bundles Python, the OCR models, and their dependencies. It runs w
 
 The app stores per-batch inputs, results, review decisions, logs, and OCR cache under `%LOCALAPPDATA%\Conference Slide Extractor\batches`. Paste that path into File Explorer to find it. Keep the same Windows user and data folder when replacing the executable with a new release. To choose a different data folder, run the executable with `--data`.
 
-All review traffic stays on the computer running the app. The browser connects to the app’s local address. Pillow, OpenCV, and NumPy decode, locate, and compare slides. RapidOCR uses bundled PP-OCRv6 neural models and ONNX Runtime on the CPU to read text and help verify matches.
+All review traffic stays on the computer running the app. The browser connects to the app’s local address. Pillow, OpenCV, and NumPy decode, locate, and compare slides. RapidOCR uses bundled PP-OCRv6 neural models and ONNX Runtime on the CPU. OpenCV uses the bundled YuNet model with slide and text checks to detect speaker-only captures. [YuNet model and license](assets/yunet/README.md)
 
 ## Windows server and automation
 
@@ -40,4 +42,4 @@ For a job runner, scan an already complete archive directly. Use a fresh output 
 .\ConferenceSlideExtractor-Windows-x64.exe scan 'D:\Incoming\session.zip' --output 'D:\Results\session-001'
 ```
 
-See [review and troubleshooting](docs/REVIEW.md), [build instructions](docs/BUILD.md), [reveal and capture QC](docs/REVEAL-QC.md), and the [scaling plan](SCALING.md).
+See [review and troubleshooting](docs/REVIEW.md), [build instructions](docs/BUILD.md), [speaker exclusion QC](docs/SPEAKER-QC.md), [reveal and capture QC](docs/REVEAL-QC.md), and the [scaling plan](SCALING.md).

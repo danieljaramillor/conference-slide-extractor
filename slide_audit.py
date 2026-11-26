@@ -9,6 +9,68 @@ import cv2
 
 from slide_regions import extract
 from slide_ocr import read_text, text_evidence, signature
+from slide_speakers import CHECK_SPEAKER, ENGINE, SPEAKER_ONLY, create_detector, is_protected_slide, speaker_status
+
+
+def audit_speaker_frames(source, groups, by_id, args, decode, ocr_enabled):
+    """Keep clear camera shots out of exports while retaining every original capture."""
+    report = {'status': 'ok', 'engine': ENGINE, 'auto_exclusion_enabled': ocr_enabled,
+              'checked_groups': 0, 'auto_excluded': [], 'needs_review': [],
+              'representative_changes': [], 'failures': []}
+    try:
+        detector = create_detector()
+    except (OSError, cv2.error) as exc:
+        report.update(status='unavailable', auto_exclusion_enabled=False, error=str(exc))
+        for group in groups:
+            if not is_protected_slide(by_id[group['representative']]):
+                group['speaker_review'] = True
+                report['needs_review'].append({'group': group['id'], 'representative': group['representative']})
+        return report
+
+    cache = getattr(args, 'ocr_cache', Path(__file__).with_name('.cache') / 'ocr')
+    for group in groups:
+        original = by_id[group['representative']]
+        if is_protected_slide(original):
+            continue
+        report['checked_groups'] += 1
+        try:
+            slide = extract(decode(source.read(original['name'])), original)
+            status = speaker_status(detector, slide, original)
+            if status == 'speaker-only' and not ocr_enabled:
+                status = 'review'
+            replacement = None
+            if status == 'speaker-only':
+                for member in group['members']:
+                    if member == original['id']:
+                        continue
+                    alternate = by_id[member]
+                    if not is_protected_slide(alternate):
+                        alternate_slide = extract(decode(source.read(alternate['name'])), alternate)
+                        if ocr_enabled and 'ocr' not in alternate:
+                            alternate['ocr'] = read_text(alternate_slide, cache)
+                        if not is_protected_slide(alternate) and speaker_status(detector, alternate_slide, alternate) == 'speaker-only':
+                            continue
+                    if is_protected_slide(alternate):
+                        replacement = alternate['id']
+                        break
+                    # An unconfirmed member may carry content absent from the current choice.
+                    status = 'review'
+        except (OSError, ValueError, RuntimeError, cv2.error) as exc:
+            report['status'] = 'partial'
+            report['failures'].append({'group': group['id'], 'representative': original['id'], 'error': str(exc)})
+            status = 'review'
+            replacement = None
+        if replacement is not None:
+            group['representative'] = replacement
+            report['representative_changes'].append({'group': group['id'], 'from': original['id'], 'to': replacement})
+        elif status == 'speaker-only':
+            group['excluded'] = True
+            group['auto_exclusion'] = 'speaker-only'
+            report['auto_excluded'].append({'group': group['id'], 'representative': original['id']})
+        elif status == 'review':
+            group['speaker_review'] = True
+            report['needs_review'].append({'group': group['id'], 'representative': original['id']})
+    return report
 
 
 def audit(source,items,groups,decisions,candidates,args,out):
@@ -114,12 +176,9 @@ def audit(source,items,groups,decisions,candidates,args,out):
                     continue
             filtered.append(pair)
         candidates=filtered
+    log['speaker_detection'] = audit_speaker_frames(source, groups, by_id, args, decode, log['ocr_enabled'])
     # These flags describe actual source quality. They never imply upscaling can
     # recreate missing letters. Missing OCR is explicit, not a silent pass.
-    face_detector=None
-    face_path=Path(cv2.data.haarcascades)/'haarcascade_frontalface_default.xml'
-    if face_path.exists() and hasattr(cv2,'CascadeClassifier'):
-        face_detector=cv2.CascadeClassifier(str(face_path))
     for group in groups:
         item=by_id[group['representative']]
         reasons=[]
@@ -138,21 +197,19 @@ def audit(source,items,groups,decisions,candidates,args,out):
             reasons.append('OCR unavailable' if not log['ocr_enabled'] else 'OCR check failed')
         elif ocr['characters']<35:
             reasons.append('little readable text')
-            if (ocr['characters']<15 and face_detector is not None):
-                gray=cv2.resize(item['gray'],(480,270))
-                faces=face_detector.detectMultiScale(gray,1.1,5,minSize=(40,40))
-                if any(w*h/(480*270)>.025 for _,_,w,h in faces):
-                    group['excluded']=True
-                    reasons.append('probable speaker-only frame (auto-excluded)')
         elif ocr.get('median_text_height',0)<10 or ocr.get('mean_confidence',0)<.82:
             reasons.append('text readability needs checking')
         if group['builds'] and not log['ocr_enabled']:
             reasons.append('unverified build match')
+        if group.get('auto_exclusion')=='speaker-only':
+            reasons.append(SPEAKER_ONLY)
+        elif group.pop('speaker_review',False):
+            reasons.append(CHECK_SPEAKER)
         group['review_reasons']=reasons
         group['needs_review']=bool(reasons)
     for pair in candidates:
         owners=[next(g for g in groups if pair[k] in g['members']) for k in ('a','b')]
-        if owners[0]['id']!=owners[1]['id']:
+        if owners[0]['id']!=owners[1]['id'] and not any(g.get('excluded') for g in owners):
             for g in owners:
                 if 'possible duplicate / build' not in g['review_reasons']:
                     g['review_reasons'].append('possible duplicate / build')

@@ -9,6 +9,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-2025
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,13 +17,15 @@ jobs:
           python-version: '3.13'
           architecture: x64
       - name: Install build requirements
-        run: python -m pip install -r requirements-build.txt
+        run: python -m pip install -r requirements-build.txt -r requirements-dev.txt
+      - name: Install the headless test browser
+        run: python -m playwright install chromium --only-shell
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
       - name: Bundle application
         run: .\build-windows.ps1 -Python python
-      - name: Test the bundled OCR and export
-        run: python tests/windows_executable_check.py dist/ConferenceSlideExtractor-Windows-x64.exe
+      - name: Test bundled OCR and the browser export
+        run: python tests/windows_executable_check.py dist/ConferenceSlideExtractor-Windows-x64.exe --browser
       - uses: actions/upload-artifact@v4
         with:
           name: ConferenceSlideExtractor-Windows-x64

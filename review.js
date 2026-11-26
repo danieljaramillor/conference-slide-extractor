@@ -9,6 +9,8 @@ let revision=Date.now();
 const $=id=>document.getElementById(id),owner=id=>groups.find(g=>g.members.includes(id));
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const needs=g=>!g.excluded&&g.needs_review&&!g.acknowledged;
+const speakerExclusion='probable speaker-only frame (auto-excluded)';
+const wasSpeakerOnly=group=>group.auto_exclusion==='speaker-only'||(group.review_reasons||[]).includes(speakerExclusion);
 const payload=()=>({version:2,source:data.source,manifest_id:data.manifest_id,groups,crops,revision,resolved_pairs:[...resolvedPairs]});
 function notify(s){$('status').textContent=s}
 function persist(){
@@ -23,6 +25,7 @@ function persist(){
 }
 function validate(d){
  if(!Array.isArray(d.groups)||d.groups.some(g=>!Number.isInteger(g.id)||g.id<1||!Array.isArray(g.members)||g.members.some(i=>!Number.isInteger(i))||!Number.isInteger(g.representative)||'excluded' in g&&typeof g.excluded!=='boolean'))throw Error('Invalid group data');
+ if(d.groups.some(g=>g.review_reasons!=null&&(!Array.isArray(g.review_reasons)||g.review_reasons.some(reason=>typeof reason!=='string'))))throw Error('Invalid review notes');
  const ids=d.groups.flatMap(g=>g.members);
  if(d.source!==data.source||data.manifest_id&&d.manifest_id!==data.manifest_id||ids.length!==images.size||new Set(ids).size!==images.size||ids.some(id=>!images.has(id))||d.groups.some(g=>!g.members.includes(g.representative))||new Set(d.groups.map(g=>g.id)).size!==d.groups.length)throw Error('Decisions do not match this scan');
  for(const [id,b] of Object.entries(d.crops||{}))if(!images.has(+id)||!Array.isArray(b)||b.length!==4||!b.every(Number.isFinite)||!(0<=b[0]&&b[0]<b[2]&&b[2]<=1&&0<=b[1]&&b[1]<b[3]&&b[3]<=1))throw Error('Invalid crop');
@@ -46,6 +49,12 @@ function slideIssues(group){
  return (group.review_reasons||[]).filter(reason=>reason!=='possible duplicate / build');
 }
 function hasIssue(group){return needs(group)&&slideIssues(group).length>0}
+function flagForReview(group,reason){
+ const reasons=group.review_reasons||[];
+ if(!reasons.includes(reason))group.review_reasons=[...reasons,reason];
+ group.needs_review=true;
+ group.acknowledged=false;
+}
 function changeView(view){
  activeView=view;
  if(view==='slides')$('filter').value='included';
@@ -102,6 +111,8 @@ function decidePair(decision){
   first.members=[...first.members,...second.members];
   first.representative=keep.representative;
   first.builds=(first.builds||0)+(second.builds||0);
+  if(wasSpeakerOnly(keep))first.auto_exclusion='speaker-only';
+  else delete first.auto_exclusion;
   first.review_reasons=slideIssues(keep);
   first.needs_review=first.review_reasons.length>0;
   first.acknowledged=Boolean(keep.acknowledged);
@@ -122,6 +133,9 @@ function restore(d){
 }
 
 const issueDescriptions={
+ [speakerExclusion]:'The scan flagged this as likely speaker footage. Confirm slide content is visible before marking it checked.',
+ 'check whether slide content is visible':'Confirm this frame contains a slide. Exclude it if it shows only people or the venue.',
+ 'check replacement capture':'Verify that the selected capture shows the whole slide with readable text and charts.',
  'possible slide transition':'Check for an overlap between slides. Choose a capture from before or after the transition.',
  'check slide region':'Check the crop. Include the whole slide and remove surrounding interface or stage footage.',
  'check photographed screen':'Check that the full projected slide is visible and its edges are readable.',
@@ -138,11 +152,12 @@ const issueDescriptions={
 };
 function memberMarkup(group,id,showSplit){
  const image=images.get(id);
+ const splitLabel=group.excluded?'Split into another excluded group':'Split into a separate slide';
  return `<div class="member">
   <label><input type="radio" name="rep-${group.id}" data-rep="${id}" data-group="${group.id}" ${id===group.representative?'checked':''}> Use this capture</label>
   <button class="preview-button" data-zoom="${id}" aria-label="Enlarge alternate capture"><img loading="lazy" src="thumbs/${id}.jpg" alt=""></button>
   <div class="file">${esc(image.name)}</div>
-  ${showSplit&&group.members.length>1?`<button data-split="${id}">Split into a separate slide</button>`:''}
+  ${showSplit&&group.members.length>1?`<button data-split="${id}">${splitLabel}</button>`:''}
  </div>`;
 }
 function renderIssues(issues){
@@ -230,7 +245,7 @@ function renderWorkflow(pairCount,issueCount,included,excluded){
   ({issues:'Continue to slide issues',slides:'Continue to deck review',export:'Continue to export'})[nextView]||'Continue';
  $('step-hint').textContent=activeView===firstPending?
   `Resolve the remaining ${activeView==='compare'?'pairs':'slide issues'} to continue.`:
-  step===2&&!included&&!firstPending?'Use the Excluded filter to restore a slide before exporting.':'';
+  step===2&&!included&&!firstPending?(excluded?'Restore an excluded capture to continue.':'There are no slides to export.'):'';
  $('step-hint').hidden=!$('step-hint').textContent;
  $('export').hidden=!server;
  $('export').disabled=exporting||locked[3];
@@ -240,9 +255,15 @@ function renderWorkflow(pairCount,issueCount,included,excluded){
 function deckCard(group,position){
  const image=images.get(group.representative);
  const title=position?`Slide ${position}`:`Excluded · Group ${group.id}`;
- const badges=group.excluded?'<span class="badge">Excluded</span>':
+ const speakerOnly=group.excluded&&wasSpeakerOnly(group);
+ const badges=group.excluded?
+  `<span class="badge">${speakerOnly?'Likely speaker-only':'Excluded'}</span>`:
   needs(group)?(group.review_reasons||[]).map(reason=>`<span class="badge">${esc(reason)}</span>`).join(''):
   '<span class="badge ready">Ready</span>';
+ const exclusionControl=group.excluded?
+  `<button data-restore="${group.id}">Restore to deck</button>`:
+  `<label><input type="checkbox" data-exclude="${group.id}"> Exclude</label>
+   <label><input type="checkbox" data-checked="${group.id}" ${group.acknowledged?'checked':''}> Checked</label>`;
  return `<article class="card ${selected.has(group.id)?'selected':''}" id="group-${group.id}">
   <button class="preview-button" data-zoom="${image.id}" aria-label="Enlarge ${title.toLowerCase()}"><img loading="lazy" src="${crops[image.id]&&server?nativeURL(image.id):`thumbs/${image.id}.jpg`}" alt=""></button>
   <div class="info">
@@ -250,8 +271,7 @@ function deckCard(group,position){
    <div class="side-info">${group.members.length} captures · ${image.slide_width||'?'} × ${image.slide_height||'?'} px</div>
    ${badges}
    <div class="controls">
-    <label><input type="checkbox" data-exclude="${group.id}" ${group.excluded?'checked':''}> Exclude</label>
-    <label><input type="checkbox" data-checked="${group.id}" ${group.acknowledged?'checked':''}> Checked</label>
+    ${exclusionControl}
     <button data-crop="${image.id}" ${server?'':'disabled title="Use the local review server to edit crops"'}>Adjust crop</button>
    </div>
    <div class="file">${esc(image.name)}</div>
@@ -265,6 +285,16 @@ function deckCard(group,position){
 function renderDeck(included){
  const expanded=[...document.querySelectorAll('.inspect[open]')].map(el=>el.closest('.card').id);
  const term=$('search').value.trim().toLowerCase(),filter=$('filter').value;
+ const excludedCount=groups.length-included.length;
+ const reviewingExclusions=filter==='excluded';
+ const showExcluded=$('show-excluded');
+ showExcluded.hidden=!excludedCount&&!reviewingExclusions;
+ showExcluded.textContent=reviewingExclusions?
+  `Back to included slides (${included.length})`:`Review excluded captures (${excludedCount})`;
+ $('deck-title').textContent=reviewingExclusions?'Review excluded captures':'Review the deck';
+ $('deck-description').textContent=reviewingExclusions?
+  'Restore a capture if it contains a slide you want in the export.':
+  'Check the included slides in the order they’ll appear in the ZIP.';
  const matches={
   included:group=>!group.excluded,
   all:()=>true,
@@ -331,10 +361,20 @@ $('undo-issue').onclick=()=>{
  $('issue-title').focus();
 };
 $('search').oninput=render;$('filter').onchange=render;
+$('show-excluded').onclick=()=>{
+ $('filter').value=$('filter').value==='excluded'?'included':'excluded';
+ $('search').value='';
+ render();
+ $('deck-title').focus();
+};
 function changeCapture(e){
  const d=e.target.dataset;
  if(d.select){const id=+d.select;e.target.checked?selected.add(id):selected.delete(id);e.target.closest('.card').classList.toggle('selected',e.target.checked);return}
- if(d.rep){const g=groups.find(g=>g.id===+d.group);g.representative=+d.rep;g.acknowledged=false}
+ if(d.rep){
+  const group=groups.find(group=>group.id===+d.group);
+  group.representative=+d.rep;
+  flagForReview(group,'check replacement capture');
+ }
  if(d.exclude)groups.find(g=>g.id===+d.exclude).excluded=e.target.checked;
  if(d.checked)groups.find(g=>g.id===+d.checked).acknowledged=e.target.checked;
  if(!d.rep&&!d.exclude&&!d.checked)return;
@@ -357,7 +397,32 @@ document.addEventListener('click',e=>{
   $('caption').textContent=images.get(id).name+(server||images.get(id).native_preview?' · native-resolution preview':' · thumbnail; start the local server for the native image');
   $('lightbox').querySelector('button').focus();
  }
- if(d.split){const id=+d.split,g=owner(id);g.members=g.members.filter(i=>i!==id);if(g.representative===id)g.representative=g.members[0];g.acknowledged=false;groups.push({id:Math.max(...groups.map(g=>g.id))+1,representative:id,members:[id],builds:0,needs_review:true,review_reasons:['check split capture']});lastPairDecision=null;lastIssueDecision=null;persist();render();notify('Capture split.')}
+ if(d.restore){
+  const group=groups.find(group=>group.id===+d.restore);
+  group.excluded=false;
+  selected.delete(group.id);
+  const speakerOnly=wasSpeakerOnly(group);
+  if(speakerOnly)flagForReview(group,speakerExclusion);
+  lastPairDecision=null;
+  lastIssueDecision=null;
+  persist();render();
+  ($('grid').querySelector('[data-restore]')||$('show-excluded')).focus();
+  notify(speakerOnly?'Capture restored. Confirm it contains a slide before exporting.':'Capture restored to the deck.');
+ }
+ if(d.split){
+  const id=+d.split,group=owner(id);
+  group.members=group.members.filter(member=>member!==id);
+  if(group.representative===id){
+   group.representative=group.members[0];
+   flagForReview(group,'check replacement capture');
+  }
+  groups.push({id:Math.max(...groups.map(group=>group.id))+1,representative:id,members:[id],builds:0,
+   excluded:Boolean(group.excluded),needs_review:true,review_reasons:['check split capture']});
+  lastPairDecision=null;
+  lastIssueDecision=null;
+  persist();render();
+  notify(group.excluded?'Capture split into two excluded groups.':'Capture split.');
+ }
  if(d.crop&&server){
   cropId=+d.crop;
   cropTrigger=e.target;
@@ -370,9 +435,25 @@ document.addEventListener('click',e=>{
 });
 $('merge').onclick=()=>{
  const chosen=groups.filter(g=>selected.has(g.id));if(chosen.length<2)return notify('Select at least two groups.');const target=chosen[0];
- target.members=chosen.flatMap(g=>g.members);target.builds=chosen.reduce((s,g)=>s+g.builds,0);
- target.representative=chosen.map(g=>images.get(g.representative)).sort((a,b)=>((b.ocr?.characters||b.detail||0)-(a.ocr?.characters||a.detail||0))||((b.slide_pixels||0)-(a.slide_pixels||0)))[0].id;
- target.excluded=chosen.every(g=>g.excluded);target.acknowledged=false;target.needs_review=true;target.review_reasons=['confirm most complete capture'];groups=groups.filter(g=>!selected.has(g.id)||g.id===target.id);selected.clear();lastPairDecision=null;lastIssueDecision=null;persist();render();notify('Groups merged. Confirm the most complete capture in Slide issues.');
+ const included=chosen.filter(group=>!group.excluded);
+ const candidates=included.length?included:chosen;
+ const rank=image=>[image.ocr?.characters||image.detail||0,image.slide_pixels||0];
+ const best=candidates.map(group=>({group,score:rank(images.get(group.representative))}))
+  .sort((a,b)=>b.score[0]-a.score[0]||b.score[1]-a.score[1])[0].group;
+ const speakerOnly=wasSpeakerOnly(best);
+ target.members=chosen.flatMap(g=>g.members);target.builds=chosen.reduce((sum,group)=>sum+(group.builds||0),0);
+ target.representative=best.representative;
+ if(speakerOnly)target.auto_exclusion='speaker-only';
+ else delete target.auto_exclusion;
+ target.excluded=!included.length;
+ target.review_reasons=[];
+ flagForReview(target,'confirm most complete capture');
+ groups=groups.filter(g=>!selected.has(g.id)||g.id===target.id);
+ selected.clear();
+ lastPairDecision=null;
+ lastIssueDecision=null;
+ persist();render();
+ notify(target.excluded?'Groups merged. The merged group is still excluded.':'Groups merged. Confirm the most complete capture in Slide issues.');
 };
 $('ack').onclick=()=>{if(!selected.size)return notify('Select at least one slide.');for(const g of groups)if(selected.has(g.id))g.acknowledged=true;selected.clear();lastPairDecision=null;lastIssueDecision=null;persist();render();notify('Marked checked.')};
 $('save').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(payload(),null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='review-decisions.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Decisions downloaded.')};
@@ -458,9 +539,9 @@ $('applycrop').onclick=()=>{
  }
  crops[cropId]=box;
  const group=owner(cropId);
- group.acknowledged=false;
- group.needs_review=true;
- group.review_reasons=['check adjusted crop'];
+ if(wasSpeakerOnly(group))group.auto_exclusion='speaker-only';
+ group.review_reasons=[];
+ flagForReview(group,'check adjusted crop');
  issueIndex=groups.filter(hasIssue).indexOf(group);
  lastIssueDecision=null;
  lastPairDecision=null;
