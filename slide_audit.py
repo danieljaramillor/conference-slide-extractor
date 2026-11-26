@@ -14,6 +14,8 @@ from slide_ocr import local_numeric_evidence, read_text, text_evidence, signatur
 from slide_speakers import CHECK_SPEAKER, ENGINE, SPEAKER_ONLY, create_detector, is_protected_slide, speaker_status
 from slide_transitions import ONE_SIDED_REVIEW_REASON
 
+NUMERIC_REVIEW = 'check possible changed value'
+
 def audit_speaker_frames(source, groups, by_id, args, decode, ocr_enabled):
     """Keep clear camera shots out of exports while retaining every original capture."""
     report = {'status': 'ok', 'engine': ENGINE, 'auto_exclusion_enabled': ocr_enabled,
@@ -81,7 +83,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
     from slide_dedupe import compare,decode,better_frame
     by_id={i['id']:i for i in items}
     log={'ocr_enabled':getattr(args,'ocr','off')=='on','numeric_splits':[],
-         'ocr_merges':[],'suppressed_distinct_pairs':0}
+         'numeric_reviews':[], 'ocr_merges':[],'suppressed_distinct_pairs':0}
+    numeric_reviews = {}
     start=time.perf_counter()
     def read_native(item):
         return extract(decode(source.read(item['name'])),item)
@@ -90,8 +93,35 @@ def audit(source,items,groups,decisions,candidates,args,out):
     def native_for_comparison(index):
         return read_native(by_id[index])
 
-    def compare_text(a, b):
-        return text_evidence(a, b, native_pair=lambda: (native_for_comparison(a['id']), native_for_comparison(b['id'])))
+    @lru_cache(maxsize=64)
+    def compare_ids(a, b, reread):
+        return text_evidence(by_id[a], by_id[b], native_pair=lambda: (native_for_comparison(a), native_for_comparison(b)),
+                             reread_numeric=reread)
+
+    def compare_text(a, b, *, reread=False):
+        return compare_ids(a['id'], b['id'], reread)
+
+    def remember_numeric(a, b, evidence):
+        if evidence.get('numeric_reviews'):
+            key = tuple(sorted((a['id'], b['id'])))
+            numeric_reviews.setdefault(key, {'a': a['id'], 'b': b['id'], 'cells': evidence['numeric_reviews']})
+
+    def inspect_local_change(a, b, metric, evidence):
+        if (evidence['numeric_conflict'] or metric['changed'] > .005
+                or min(metric.get('coverage_a', 0), metric.get('coverage_b', 0)) < .98
+                or a.get('sha256') == b.get('sha256')
+                or (a['slide_width'], a['slide_height']) != (b['slide_width'], b['slide_height'])):
+            return
+        local_occlusions, unresolved = [], []
+        changes = local_numeric_evidence(native_for_comparison(a['id']), native_for_comparison(b['id']),
+                                         occlusions=local_occlusions, unresolved=unresolved)
+        if changes:
+            evidence.update(numeric_conflict=True, numeric_changes=changes, numeric_source='native region')
+        elif unresolved:
+            evidence.update(numeric_conflict=True, numeric_reviews=unresolved, numeric_source='native region')
+        elif local_occlusions:
+            evidence['numeric_occlusions'] = sorted(set(evidence.get('numeric_occlusions', []) + local_occlusions))
+
     def read_targets(targets):
         if not targets:
             return
@@ -132,18 +162,9 @@ def audit(source,items,groups,decisions,candidates,args,out):
         clear_alternates = defaultdict(set)
         for d in decisions:
             a,b=by_id[d['image']],by_id[d['matched']]
-            evidence = compare_text(a,b) if a['id'] in suspicious_ids else {'numeric_conflict': False}
-            if (not evidence['numeric_conflict'] and d['reason']=='duplicate' and d['changed']<=.005
-                    and min(d.get('coverage_a', 0),d.get('coverage_b', 0))>=.98
-                    and a.get('sha256')!=b.get('sha256')
-                    and (a['slide_width'],a['slide_height'])==(b['slide_width'],b['slide_height'])):
-                local_occlusions = []
-                changes = local_numeric_evidence(native_for_comparison(a['id']), native_for_comparison(b['id']),
-                                                 occlusions=local_occlusions)
-                if changes:
-                    evidence.update(numeric_conflict=True, numeric_changes=changes, numeric_source='native region')
-                elif local_occlusions:
-                    evidence['numeric_occlusions'] = sorted(set(evidence.get('numeric_occlusions', []) + local_occlusions))
+            evidence = dict(compare_text(a, b, reread=True)) if a['id'] in suspicious_ids else {'numeric_conflict': False}
+            if d['reason'] == 'duplicate':
+                inspect_local_change(a, b, d, evidence)
             if d['reason']=='duplicate' and not evidence['numeric_conflict']:
                 obscured = evidence.get('numeric_occlusions')
                 if obscured == ['a']:
@@ -151,6 +172,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 elif obscured == ['b']:
                     clear_alternates[b['id']].add(a['id'])
             if evidence['numeric_conflict']:
+                remember_numeric(a, b, evidence)
                 separations[a['id']].add(b['id'])
                 separations[b['id']].add(a['id'])
                 group=next(g for g in groups if a['id'] in g['members'])
@@ -161,7 +183,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
                     group['representative']=max(group['members'],key=lambda i:by_id[i]['slide_pixels']*by_id[i]['sharpness'])
                 groups.append({'id':max(g['id'] for g in groups)+1,'representative':a['id'],
                                'members':[a['id']],'builds':0})
-                log['numeric_splits'].append({'a':a['id'],'b':b['id'],**evidence})
+                if not evidence.get('numeric_reviews'):
+                    log['numeric_splits'].append({'a':a['id'],'b':b['id'],**evidence})
         for group in groups:
             representative = group['representative']
             alternatives = clear_alternates.get(representative, set()).intersection(group['members'])
@@ -187,7 +210,7 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 evidence=compare_text(a,b)
                 ca,cb=evidence['text_cover_a'],evidence['text_cover_b']
                 if (min(evidence['text_words_a'],evidence['text_words_b'])<10 or
-                    evidence['heading_similarity']<.90 or evidence['numeric_conflict'] or max(ca,cb)<.94):
+                    evidence['heading_similarity']<.90 or max(ca,cb)<.94):
                     continue
                 metric=compare(a,b,lambda item: native_for_comparison(item['id']))
                 if metric['content_replacement']:
@@ -198,6 +221,15 @@ def audit(source,items,groups,decisions,candidates,args,out):
                        and min(ca,cb)>.42 and max(metric['coverage_a'],metric['coverage_b'])>.89
                        and metric['changed']<.40 and metric['mae']<.19)
                 if not (dup or build):
+                    continue
+                evidence = dict(compare_text(a, b, reread=True) if evidence['numeric_conflict'] else evidence)
+                if dup:
+                    inspect_local_change(a, b, metric, evidence)
+                if evidence['numeric_conflict']:
+                    remember_numeric(a, b, evidence)
+                    separations[a['id']].add(b['id'])
+                    separations[b['id']].add(a['id'])
+                    blocked.add(b['id'])
                     continue
                 if build and not dup:
                     choose_b=cb<ca-.025 # B has additional text: almost all of A occurs in B.
@@ -219,9 +251,13 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 log['ocr_merges'].append({'a':a['id'],'b':b['id'],'reason':'ocr-build' if build and not dup else 'ocr-duplicate',**evidence})
         groups=[g for g in groups if g['id'] not in removed]
         owners={i:g for g in groups for i in g['members']}
+        numeric_groups = {frozenset((owners[a]['id'], owners[b]['id'])) for a, b in numeric_reviews}
         filtered=[]
         for pair in candidates:
-            a,b=[by_id[owners[pair[k]]['representative']] for k in ('a','b')]
+            first, second = (owners[pair[k]] for k in ('a', 'b'))
+            if frozenset((first['id'], second['id'])) in numeric_groups:
+                continue
+            a, b = by_id[first['representative']], by_id[second['representative']]
             if a.get('ocr',{}).get('status')=='ok' and b.get('ocr',{}).get('status')=='ok':
                 ev=compare_text(a,b)
                 clearly_different=(ev['heading_similarity']<.65 and max(ev['text_cover_a'],ev['text_cover_b'])<.80)
@@ -242,6 +278,18 @@ def audit(source,items,groups,decisions,candidates,args,out):
         results = [item['ocr'] for item in items if 'ocr' in item]
         log['ocr_images'] = len(results)
         log['ocr_errors'] = sum(result['status'] != 'ok' for result in results)
+    owners = {member: group for group in groups for member in group['members']}
+    numeric_issue_groups = set()
+    reviewed_group_pairs = set()
+    for evidence in numeric_reviews.values():
+        a, b = owners[evidence['a']], owners[evidence['b']]
+        group_pair = tuple(sorted((a['id'], b['id'])))
+        if a.get('excluded') or b.get('excluded') or group_pair in reviewed_group_pairs:
+            continue
+        reviewed_group_pairs.add(group_pair)
+        report_group = group_pair[0]
+        log['numeric_reviews'].append({**evidence, 'group': report_group})
+        numeric_issue_groups.add(report_group)
     # These flags describe actual source quality. They never imply upscaling can
     # recreate missing letters. Missing OCR is explicit, not a silent pass.
     for group in groups:
@@ -268,6 +316,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
             reasons.append('text readability needs checking')
         if group['builds'] and not log['ocr_enabled']:
             reasons.append('unverified build match')
+        if group['id'] in numeric_issue_groups:
+            reasons.append(NUMERIC_REVIEW)
         if group.get('auto_exclusion')=='speaker-only':
             reasons.append(SPEAKER_ONLY)
         elif group.pop('speaker_review',False):

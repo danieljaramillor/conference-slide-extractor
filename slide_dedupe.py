@@ -20,13 +20,13 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from slide_comparison import has_added_chart_outlines, has_local_content_replacement
+from slide_comparison import has_added_chart_outlines, has_local_content_replacement, tint_duplicate
 from slide_regions import broadcast_crop_profile, confirmed_presenter_crops, detect_region, extract, presenter_layout, quality, recover_projected_screen
 from slide_text import SESSION_TEXT, slide_text_record
 from slide_transitions import EXCLUSION_REASON, capture_runs, mark_crossfades, mark_one_sided_transitions
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.12.0'
+APP_VERSION = '2.13.0'
 cv2.setNumThreads(1)
 
 
@@ -234,6 +234,8 @@ def apply_presenter_crops(source, items, pool, thumbs):
 def better_frame(item, ref, metrics):
     if bool(item.get('crossfade')) != bool(ref.get('crossfade')):
         return not item.get('crossfade')
+    if metrics.get('color_cast_verified'):
+        return item['quad'] is None
     if 'prefer_first_for_outline' in metrics:
         return metrics['prefer_first_for_outline']
     if metrics.get('build') and not metrics.get('duplicate'):
@@ -247,6 +249,30 @@ def better_frame(item, ref, metrics):
     iq=item['slide_pixels']*min(1.,max(.1,item['sharpness']/120))
     rq=ref['slide_pixels']*min(1.,max(.1,ref['sharpness']/120))
     return iq > rq
+
+
+def match_projected_slide(item, neighbors, by_id, read_native):
+    checked = set()
+    for group in neighbors:
+        if group is None or group['id'] in checked:
+            continue
+        checked.add(group['id'])
+        ref = by_id[group['representative']]
+        photo, direct = (item, ref) if item.get('quad') is not None else (ref, item)
+        if (photo.get('crop_mode') != 'projected-screen' or photo.get('quad') is None
+                or direct.get('quad') is not None or direct['crop_confidence'] < .85
+                or direct['region_ambiguous'] or direct['slide_pixels'] < 1.35 * photo['slide_pixels']):
+            continue
+        photo_aspect = photo['slide_width'] / photo['slide_height']
+        direct_aspect = direct['slide_width'] / direct['slide_height']
+        if abs(photo_aspect / direct_aspect - 1) > .08:
+            continue
+        if tint_duplicate(read_native(photo), read_native(direct)):
+            metrics = compare(item, ref)
+            metrics.update(duplicate=True, build=False, content_replacement=False,
+                           localized_reveal=False, color_cast_verified=True)
+            return metrics['mae'], group, metrics
+    return None
 
 
 def write_image(path, image):
@@ -303,6 +329,7 @@ def run(args):
     transition_ids = {item['id'] for item in transitions}
     eligible = [item for item in items if item['id'] not in transition_ids]
     groups, matchable, decisions, candidates = [], [], [], []
+    recent_groups = {}
     by_id = {i['id']: i for i in eligible}
     for pos, item in enumerate(eligible):
         item['position'] = pos
@@ -316,6 +343,7 @@ def run(args):
             groups.append(group)
             if not protected:
                 matchable.append(group)
+                recent_groups[item['id']] = group
             continue
         rep_ids = [g['representative'] for g in matchable]
         rep_pos = [by_id[i]['position'] for i in rep_ids]
@@ -334,6 +362,9 @@ def run(args):
                     best = (score, group, metrics)
             elif metrics['mae'] < .055 or (metrics['title_changed'] < .008 and max(metrics['coverage_a'], metrics['coverage_b']) > .80):
                 candidates.append({'a': ref['id'], 'b': item['id'], **metrics})
+        if best is None:
+            neighbors = (recent_groups.get(item['id'] - gap) for gap in range(1, 4))
+            best = match_projected_slide(item, neighbors, by_id, read_native)
         if best:
             _, group, metrics = best
             ref = by_id[group['representative']]
@@ -350,6 +381,7 @@ def run(args):
             group = {'id': len(groups)+1, 'representative': item['id'], 'members': [item['id']], 'builds': 0}
             groups.append(group)
             matchable.append(group)
+        recent_groups[item['id']] = group
     cached_native.cache_clear()
     from slide_audit import audit
     groups, candidates, audit_log = audit(source,eligible,groups,decisions,candidates,args,out)
@@ -397,6 +429,8 @@ def run(args):
         'groups': groups,
         'pairs': manifest['review_pairs'],
     }
+    if audit_log.get('numeric_reviews'):
+        review_inputs['numeric_reviews'] = audit_log['numeric_reviews']
     manifest['manifest_id'] = hashlib.sha256(json.dumps(review_inputs, sort_keys=True).encode()).hexdigest()
     print('Writing native-resolution slides and text...', flush=True)
     export(source, manifest, out / 'selected')

@@ -29,6 +29,16 @@ def grid_slide():
     return image
 
 
+def grid_ocr(response_box):
+    lines = []
+    for row, values in enumerate((('Group','Response','Follow-up'),('A','47.8%','12 months'),('B','42.8%','9 months'))):
+        for column, label in enumerate(values):
+            x, y = 136+310*column, 232+80*row
+            corners = [[x,y], [x+132,y], [x+132,y+31], [x,y+31]]
+            lines.append({'text': label, 'score': .98, 'box': response_box if (row,column)==(1,1) else corners})
+    return {'status': 'ok', 'text': '\n'.join(line['text'] for line in lines), 'lines': lines}
+
+
 class SessionTextTests(unittest.TestCase):
     def test_recovers_ruled_table_and_explicit_page_from_real_ocr(self):
         image = grid_slide()
@@ -41,6 +51,40 @@ class SessionTextTests(unittest.TestCase):
         table, = result['tables']
         self.assertEqual(table['method'], 'ruled_grid')
         self.assertEqual([row[1] for row in table['rows']], ['Response','47.8%','42.8%'])
+
+    def test_box_crossing_rows_uses_separate_native_crops(self):
+        ocr = grid_ocr([[446,332], [578,332], [578,416], [446,416]])
+        result = slide_text_record(1, 'table.png', grid_slide(), ocr)
+        table, = result['tables']
+        self.assertEqual([row[1] for row in table['rows']], ['Response','47.8%','42.8%'])
+        self.assertEqual(result['text'], ocr['text'])
+        self.assertFalse(table['review_cells'])
+        self.assertEqual([(cell['row'],cell['column'],cell['bounds']) for cell in table['cell_sources']],
+                         [(2,2,[420,290,730,370]), (3,2,[420,370,730,450])])
+
+    def test_unavailable_reread_flags_cropped_cells_without_assigning_their_text(self):
+        ocr = grid_ocr([[446,312], [838,312], [838,343], [446,343]])
+        with patch('slide_ocr._recognize_cell', side_effect=RuntimeError('Model unavailable')):
+            result = slide_text_record(1, 'table.png', grid_slide(), ocr)
+        table, = result['tables']
+        self.assertEqual(table['rows'][1], ['A',None,None])
+        self.assertEqual(table['rows'][2], ['B','42.8%','9 months'])
+        self.assertEqual(table['status'], 'partial')
+        self.assertFalse(table['cell_sources'])
+        self.assertEqual(table['review_cells'], [
+            {'row':2,'column':2,'bounds':[420,290,730,370],'reason':'crosses_cell_boundary'},
+            {'row':2,'column':3,'bounds':[730,290,1040,370],'reason':'crosses_cell_boundary'},
+        ])
+
+    def test_ink_touching_a_grid_line_prevents_native_reread(self):
+        image = grid_slide()
+        cv2.line(image, (540,347), (540,402), (0,0,0), 2)
+        ocr = grid_ocr([[446,332], [578,332], [578,416], [446,416]])
+        with patch('slide_ocr._recognize_cell', return_value=('99%', .99)) as recognizer:
+            table, = slide_text_record(1, 'table.png', image, ocr)['tables']
+        recognizer.assert_not_called()
+        self.assertEqual([row[1] for row in table['rows']], ['Response',None,None])
+        self.assertEqual([(cell['row'],cell['column']) for cell in table['review_cells']], [(2,2), (3,2)])
 
     def test_reconstructs_repeated_cell_columns_and_leaves_prose_as_text(self):
         boxes = []
@@ -70,6 +114,18 @@ class SessionTextTests(unittest.TestCase):
         record=slide_text_record(1,'schema.png',image,ocr)
         self.assertFalse(record['tables'])
         self.assertEqual(record['text'],ocr['text'])
+
+    def test_declined_grid_cannot_supply_its_boxes_to_aligned_fallback(self):
+        lines = []
+        for row, label in enumerate(('A', 'B', 'C')):
+            y = 239+80*row
+            for x, value in zip((145, 447, 600), (label, '12', '15')):
+                lines.append({'text': value, 'score': .98,
+                              'box': [[x,y],[x+36,y],[x+36,y+20],[x,y+20]]})
+        ocr = {'status': 'ok', 'text': '\n'.join(line['text'] for line in lines), 'lines': lines}
+        record = slide_text_record(1, 'declined-grid.png', grid_slide(), ocr)
+        self.assertEqual(record['tables'], [])
+        self.assertEqual(record['text'], ocr['text'])
 
     def test_export_rebuilds_records_for_review_order_crop_and_exclusions(self):
         with TemporaryDirectory() as directory:

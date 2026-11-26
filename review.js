@@ -7,14 +7,16 @@ let reviewPlan, compareSelection=null, activeComparison=null, comparisonRequest=
 let completedBuild=null,completedCandidate=null,completedComparison=null,completedRequest=null;
 const comparisonCache=new Map();
 let issueIndex=0, activeIssue=null, lastIssueDecision=null;
+let numericReviewsByGroup=new Map();
 let deckReviewed=false, exporting=false, zoomTrigger=null, cropTrigger=null;
 let revision=Date.now();
 const $=id=>document.getElementById(id),owner=id=>groups.find(g=>g.members.includes(id));
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const needs=g=>!g.excluded&&g.needs_review&&!g.acknowledged;
+const needs=g=>!g.excluded&&(g.needs_review||numericReviewsByGroup.has(g.id))&&!g.acknowledged;
 const speakerExclusion='probable speaker-only frame (auto-excluded)';
 const transitionExclusion='blended slide transition (auto-excluded)';
 const possibleBlend='possible blend with unique content';
+const possibleNumber='check possible changed value';
 const automaticExclusions={
  'speaker-only':{reason:speakerExclusion,label:'Likely speaker-only'},
  transition:{reason:transitionExclusion,label:'Blended transition'}
@@ -51,6 +53,7 @@ function validate(d){
  for(const [id,b] of Object.entries(d.crops||{})){const im=images.get(+id);if(Math.round(b[2]*im.width)-Math.round(b[0]*im.width)<2||Math.round(b[3]*im.height)-Math.round(b[1]*im.height)<2)throw Error('Crop must contain at least two pixels in each dimension')}
 }
 function nativeURL(id){return server?`native/${id}.png`+(crops[id]?'?crop='+crops[id].join(','):''):images.get(id).native_preview||`thumbs/${id}.jpg`}
+function numericPreviewURL(id){return server?`native/${id}.png`:images.get(id).native_preview||`thumbs/${id}.jpg`}
 function pairKey(pair){return [pair.a,pair.b].sort((a,b)=>a-b).join(':')}
 function pairs(){
  const owners=new Map(groups.flatMap(g=>g.members.map(id=>[id,g])));
@@ -108,8 +111,26 @@ function manuallySeparated(left,right){
  }
  return false;
 }
+function refreshNumericIssues(){
+ numericReviewsByGroup=new Map();
+ const reviews=data.audit?.numeric_reviews||[];
+ if(!reviews.length)return;
+ const owners=new Map(groups.flatMap(group=>group.members.map(id=>[id,group])));
+ for(const review of reviews){
+  const first=owners.get(review.a),second=owners.get(review.b);
+  if(!first||!second||first===second||first.excluded||second.excluded)continue;
+  const id=Math.min(first.id,second.id);
+  if(!numericReviewsByGroup.has(id))numericReviewsByGroup.set(id,[]);
+  numericReviewsByGroup.get(id).push(review);
+ }
+}
+function reviewReasons(group){
+ const reasons=(group.review_reasons||[]).filter(reason=>reason!==possibleNumber);
+ if(numericReviewsByGroup.has(group.id))reasons.push(possibleNumber);
+ return reasons;
+}
 function slideIssues(group){
- return (group.review_reasons||[]).filter(reason=>reason!=='possible duplicate / build');
+ return reviewReasons(group).filter(reason=>reason!=='possible duplicate / build');
 }
 function hasIssue(group){return needs(group)&&slideIssues(group).length>0}
 function flagForReview(group,reason){
@@ -367,6 +388,7 @@ const issueDescriptions={
  'OCR check failed':'Text recognition failed for this capture. Check small text, or choose another capture.',
  'little readable text':'The app found little readable text. Check that the crop includes any labels or text that should be visible.',
  'text readability needs checking':'Check small text, chart labels, and numbers against the image.',
+ [possibleNumber]:'A number may have changed. Both captures are kept. Compare the areas below before marking this checked.',
  'unverified build match':'Check that the chosen capture includes everything revealed in this slide build.',
  'check adjusted crop':'Open the updated crop and make sure all the slide content is visible.',
  'check split capture':'Verify that this separated capture belongs in the deck as its own slide.',
@@ -383,6 +405,51 @@ function memberMarkup(group,id,showSplit){
   <div class="file">${esc(image.name)}</div>
   ${showSplit&&group.members.length>1?`<button data-split="${id}">${splitLabel}</button>`:''}
  </div>`;
+}
+function drawNumericCrop(canvas,id,box){
+ const item=images.get(id);
+ if(!item||!Array.isArray(box)||box.length!==4||!box.every(Number.isFinite))return;
+ const [x1,y1,x2,y2]=box;
+ if(!(0<=x1&&x1<x2&&x2<=item.slide_width&&0<=y1&&y1<y2&&y2<=item.slide_height))return;
+ const original=new Image();
+ original.onload=()=>{
+  const w=original.naturalWidth/item.slide_width,h=original.naturalHeight/item.slide_height;
+  canvas.width=Math.min(400,(x2-x1)*3);
+  canvas.height=Math.max(1,Math.round(canvas.width*(y2-y1)/(x2-x1)));
+  const ctx=canvas.getContext('2d');
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(original,x1*w,y1*h,(x2-x1)*w,(y2-y1)*h,0,0,canvas.width,canvas.height);
+  canvas.dataset.ready='true';
+ };
+ original.src=numericPreviewURL(id);
+}
+function renderNumericIssues(group){
+ const target=$('issue-numeric');
+ if(!target)return;
+ const reviews=numericReviewsByGroup.get(group.id)||[];
+ target.hidden=!reviews.length;
+ target.replaceChildren();
+ if(!reviews.length)return;
+ for(const review of reviews){
+  for(const cell of review.cells){
+   const grid=document.createElement('div');
+   grid.className='numeric-issue-grid';
+   const ordered=[['a',review.a],['b',review.b]].sort((a,b)=>a[1]-b[1]);
+   for(const [side,id] of ordered){
+    const item=images.get(id),card=document.createElement('div');
+    const filename=item.name.split(/[\\/]/).pop();
+    const original=cell[`text_${side}`],local=cell[`read_${side}`];
+    card.className='numeric-issue-cell';
+    card.innerHTML=`<span class="file" title="${esc(filename)}">Capture ${id+1}</span>
+     <button class="preview-button" data-zoom="${id}" data-numeric-preview aria-label="Enlarge capture ${id+1}"><canvas aria-hidden="true"></canvas><span>Open capture</span></button>
+     ${original?`<span class="file">Full-slide OCR ${esc(original)}</span>`:''}
+     <span class="file">${local?`Local reread ${esc(local)}`:'No clear local reread'}</span>`;
+    drawNumericCrop(card.querySelector('canvas'),id,cell[`bounds_${side}`]);
+    grid.append(card);
+   }
+   target.append(grid);
+  }
+ }
 }
 function renderIssues(issues){
  issueIndex=Math.max(0,Math.min(issueIndex,issues.length-1));
@@ -405,6 +472,7 @@ function renderIssues(issues){
  const height=crop?Math.round(crop[3]*image.height)-Math.round(crop[1]*image.height):image.slide_height;
  $('issue-size').textContent=`${width||'?'} × ${height||'?'} px · Select the image to enlarge`;
  $('issue-reasons').innerHTML=slideIssues(group).map(reason=>`<li>${esc(issueDescriptions[reason]||reason)}</li>`).join('');
+ renderNumericIssues(group);
  const following=$('issue-following');
  const after=image.transition_review?.after;
  following.hidden=!images.has(after);
@@ -487,7 +555,7 @@ function deckCard(group,position){
  const exclusion=automaticExclusions[exclusionType(group)];
  const badges=group.excluded?
   `<span class="badge">${exclusion?.label||'Excluded'}</span>`:
-  needs(group)?(group.review_reasons||[]).map(reason=>`<span class="badge">${esc(reason)}</span>`).join(''):
+  needs(group)?reviewReasons(group).map(reason=>`<span class="badge">${esc(reason)}</span>`).join(''):
   '<span class="badge ready">Ready</span>';
  const exclusionControl=group.excluded?
   `<button data-restore="${group.id}">Restore to deck</button>`:
@@ -567,6 +635,7 @@ function renderDeck(included){
  for(const id of expanded){const target=$(id)?.querySelector('.inspect');if(target)target.open=true}
 }
 function render(){
+ refreshNumericIssues();
  const issues=groups.filter(hasIssue);
  const included=groups.filter(group=>!group.excluded);
  const excluded=groups.length-included.length;
@@ -701,7 +770,7 @@ document.addEventListener('click',e=>{
   const id=+zoom.dataset.zoom;
   zoomTrigger=zoom;
   $('lightbox').style.display='flex';
-  $('lightbox').querySelector('img').src=nativeURL(id);
+  $('lightbox').querySelector('img').src=zoom.hasAttribute('data-numeric-preview')?numericPreviewURL(id):nativeURL(id);
   $('caption').textContent=images.get(id).name+(server||images.get(id).native_preview?' · native-resolution preview':' · thumbnail; start the local server for the native image');
   $('lightbox').querySelector('button').focus();
  }
@@ -875,6 +944,7 @@ const savedDecision=typeof SAVED_REVIEW!=='undefined'?SAVED_REVIEW:null;
 for(const candidate of [localDecision,savedDecision].filter(Boolean).sort((a,b)=>(b.revision||0)-(a.revision||0))){
  try{restore(candidate);break}catch{}
 }
+refreshNumericIssues();
 if(pairs().length)changeView('compare');
 else if(groups.some(hasIssue))changeView('issues');
 else changeView('slides');

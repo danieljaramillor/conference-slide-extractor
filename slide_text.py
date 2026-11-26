@@ -1,7 +1,7 @@
 """Build one text record per selected slide, with table evidence when available."""
 
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from statistics import median
 
 import cv2
@@ -11,6 +11,8 @@ import numpy as np
 SESSION_TEXT = 'slides.jsonl'
 _PAGE = re.compile(r'(?:slide|page)\s+(\d{1,4})(?:\s*(?:of|/)\s*\d{1,4})?', re.I)
 _DATA = re.compile(r'[+−-]?\s*\d[\d.,%±/–−()\[\] -]*')
+_SINGLE_NUMBER = re.compile(r'[+−-]?\s*\d+(?:[.,]\d+)*\s*%?')
+_REREAD_LIMIT = 8
 
 
 def _ocr_boxes(ocr):
@@ -44,12 +46,100 @@ def _bands(projection, minimum):
     positions = np.flatnonzero(projection >= minimum)
     if not positions.size:
         return []
-    return [int(values[len(values)//2]) for values in np.split(positions, np.flatnonzero(np.diff(positions) > 1)+1)]
+    return [(int(values[0]), int(values[-1])+1)
+            for values in np.split(positions, np.flatnonzero(np.diff(positions) > 1)+1)]
 
 
-def _native_bounds(xs, ys, scale, width, height):
-    return [max(0, round(xs[0] / scale)), max(0, round(ys[0] / scale)),
-            min(width, round((xs[-1]+1) / scale)), min(height, round((ys[-1]+1) / scale))]
+def _native_bounds(bounds, scales):
+    return [round(position / scale) for position, scale in zip(bounds, scales * 2)]
+
+
+def _cell_ink_crop(image, text_ink, bounds, scales):
+    """Crop an isolated line of ink with room on every side inside its cell."""
+    left, top, right, bottom = bounds
+    mask = text_ink[top:bottom, left:right]
+    x, y, width, height = cv2.boundingRect(mask)
+    if (width < 3 or height < 4 or min(x, y, mask.shape[1]-x-width, mask.shape[0]-y-height) < 4
+            or not mask[y:y+height].any(axis=1).all()):
+        return None
+    x1, y1, x2, y2 = _native_bounds((left+x-2, top+y-2, left+x+width+2, top+y+height+2), scales)
+    return image[y1:y2, x1:x2]
+
+
+def _reread_number(crop):
+    try:
+        from slide_ocr import _recognize_cell
+
+        label, confidence = _recognize_cell(crop)
+    except (ImportError, OSError, RuntimeError, ValueError, cv2.error):
+        return None
+    label = label.strip()
+    if confidence >= .95 and _SINGLE_NUMBER.fullmatch(label):
+        return label, round(confidence, 4)
+    return None
+
+
+def _grid_rows(image, boxes, ink, x_bands, y_bands, scales, remaining):
+    sx, sy = scales
+    xs = [(start+end)//2 for start, end in x_bands]
+    ys = [(start+end)//2 for start, end in y_bands]
+    populated, uncertain, supported = {}, {}, set()
+    for label, left, top, right, bottom, score in boxes:
+        left, top, right, bottom = left*sx, top*sy, right*sx, bottom*sy
+        column = bisect_right(xs, (left+right)/2)-1
+        row = bisect_right(ys, (top+bottom)/2)-1
+        if 0 <= row < len(ys)-1 and 0 <= column < len(xs)-1:
+            supported.add((row, column))
+            contained = left >= xs[column] and right <= xs[column+1] and top >= ys[row] and bottom <= ys[row+1]
+            if contained and score >= .80:
+                populated.setdefault((row, column), []).append((label, top+bottom, left))
+                continue
+        columns = range(max(0, bisect_right(xs, left)-1), min(len(xs)-1, bisect_left(xs, right)))
+        rows = range(max(0, bisect_right(ys, top)-1), min(len(ys)-1, bisect_left(ys, bottom)))
+        for r in rows:
+            for c in columns:
+                contained = left >= xs[c] and right <= xs[c+1] and top >= ys[r] and bottom <= ys[r+1]
+                reasons = uncertain.setdefault((r, c), set())
+                reasons.add('low_ocr_confidence' if contained else 'crosses_cell_boundary')
+
+    # A blank division often separates two flowchart lanes. Its center has no
+    # textual support, even when the detected rules resemble a table.
+    if len(supported) < max(4, (len(ys)-1)*(len(xs)-1)*.30) or len({c for _,c in supported}) < len(xs)-1:
+        return None, remaining
+
+    rows = [[None]*(len(xs)-1) for _ in range(len(ys)-1)]
+    for (row, column), reads in populated.items():
+        ordered = sorted(reads, key=lambda read: (round(read[1]/10), read[2]))
+        rows[row][column] = ' '.join(read[0] for read in ordered)
+
+    review_cells, cell_sources = [], []
+    text_ink = None
+    if uncertain and remaining:
+        # Remove only the confirmed ruling strips. The line detector also
+        # finds long strokes in cell content, which must stay in the ink mask.
+        text_ink = ink.copy()
+        for start, end in x_bands:
+            text_ink[:, start:end] = 0
+        for start, end in y_bands:
+            text_ink[start:end, :] = 0
+    for (row, column), reasons in sorted(uncertain.items()):
+        bounds = (xs[column], ys[row], xs[column+1], ys[row+1])
+        location = {'row': row+1, 'column': column+1, 'bounds': _native_bounds(bounds, scales)}
+        previous = rows[row][column]
+        rows[row][column] = None
+        recovered = None
+        if remaining and (previous is None or _SINGLE_NUMBER.fullmatch(previous)):
+            crop = _cell_ink_crop(image, text_ink, bounds, scales)
+            if crop is not None:
+                recovered = _reread_number(crop)
+                remaining -= 1
+        if recovered and (previous is None or previous.replace(' ', '') == recovered[0].replace(' ', '')):
+            rows[row][column] = recovered[0]
+            cell_sources.append({**location, 'method': 'native_reread', 'confidence': recovered[1]})
+        else:
+            reason = 'crosses_cell_boundary' if 'crosses_cell_boundary' in reasons else 'low_ocr_confidence'
+            review_cells.append({**location, 'reason': reason})
+    return (rows, review_cells, cell_sources), remaining
 
 
 def _ruled_tables(image, boxes):
@@ -60,50 +150,39 @@ def _ruled_tables(image, boxes):
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     h, w = gray.shape
     if min(h, w) < 100:
-        return []
+        return [], []
+    scales = (w/width, h/height)
     ink = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 9)
     horizontal = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((1, max(26, w//27)), np.uint8))
     vertical = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((max(20, h//32), 1), np.uint8))
     # Anti-aliased intersections can have a small gap after downsampling.
     joint = cv2.dilate(cv2.bitwise_or(horizontal, vertical), np.ones((3, 3), np.uint8))
     contours, _ = cv2.findContours(joint, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    tables = []
+    tables, grid_bounds = [], []
+    remaining = _REREAD_LIMIT
     for contour in contours:
         x, y, gw, gh = cv2.boundingRect(contour)
         if gw < w*.12 or gh < h*.065:
             continue
-        xs = [x+i for i in _bands(np.count_nonzero(vertical[y:y+gh, x:x+gw], axis=0), .72*gh)]
-        ys = [y+i for i in _bands(np.count_nonzero(horizontal[y:y+gh, x:x+gw], axis=1), .72*gw)]
-        if not (3 <= len(xs) <= 31 and 3 <= len(ys) <= 61):
+        x_bands = [(x+start, x+end) for start, end in
+                   _bands(np.count_nonzero(vertical[y:y+gh, x:x+gw], axis=0), .72*gh)]
+        y_bands = [(y+start, y+end) for start, end in
+                   _bands(np.count_nonzero(horizontal[y:y+gh, x:x+gw], axis=1), .72*gw)]
+        if not (3 <= len(x_bands) <= 31 and 3 <= len(y_bands) <= 61):
             continue
+        xs = [(start+end)//2 for start, end in x_bands]
+        ys = [(start+end)//2 for start, end in y_bands]
         if min(np.diff(xs)) < 12 or min(np.diff(ys)) < 9:
             continue
-        populated, partial = {}, False
-        for box in boxes:
-            label, left, top, right, bottom, score = box
-            cx, cy = (left+right)*scale/2, (top+bottom)*scale/2
-            column, row = bisect_right(xs, cx)-1, bisect_right(ys, cy)-1
-            if not (0 <= row < len(ys)-1 and 0 <= column < len(xs)-1):
-                continue
-            if left*scale < xs[column]-2 or right*scale > xs[column+1]+2 or score < .80:
-                partial = True
-                continue
-            populated.setdefault((row,column), []).append(box)
-        # A blank full-width division often separates two flowchart lanes.
-        # Preserve those lanes in the raw text without treating the gap as a column.
-        if len(populated) < max(4, (len(ys)-1)*(len(xs)-1)*.30) or len({col for _,col in populated}) < len(xs)-1:
-            continue
-        rows = []
-        for row in range(len(ys)-1):
-            values = []
-            for col in range(len(xs)-1):
-                cell = sorted(populated.get((row,col), []), key=lambda box: (round(_mid_y(box)/5), box[1]))
-                values.append(' '.join(box[0] for box in cell) if cell else None)
-            rows.append(values)
-        tables.append({'bounds': _native_bounds(xs,ys,scale,width,height), 'method': 'ruled_grid',
-                       'status': 'partial' if partial or any(None in row for row in rows) else 'reconstructed',
-                       'rows': rows})
-    return tables
+        bounds = _native_bounds((xs[0], ys[0], xs[-1]+1, ys[-1]+1), scales)
+        grid_bounds.append(bounds)
+        recovered, remaining = _grid_rows(image, boxes, ink, x_bands, y_bands, scales, remaining)
+        if recovered is not None:
+            rows, review_cells, cell_sources = recovered
+            tables.append({'bounds': bounds, 'method': 'ruled_grid',
+                           'status': 'partial' if any(None in row for row in rows) else 'reconstructed',
+                           'rows': rows, 'review_cells': review_cells, 'cell_sources': cell_sources})
+    return tables, grid_bounds
 
 
 def _aligned_tables(boxes, width):
@@ -155,11 +234,11 @@ def _aligned_tables(boxes, width):
 def slide_text_record(number, name, image, ocr):
     status = ocr.get('status', 'unavailable')
     boxes = _ocr_boxes(ocr) if status == 'ok' else []
-    tables = _ruled_tables(image, boxes) if len(boxes) >= 4 else []
-    # Avoid inferring a second copy of rows already inside a detected grid.
+    tables, grid_bounds = _ruled_tables(image, boxes) if len(boxes) >= 4 else ([], [])
+    # Inferred rows must not reuse an OCR box rejected by the physical grid.
     unassigned = [box for box in boxes if not any(
-        left <= (box[1]+box[3])/2 <= right and top <= _mid_y(box) <= bottom
-        for left,top,right,bottom in (table['bounds'] for table in tables))]
+        left < box[3] and box[1] < right and top < box[4] and box[2] < bottom
+        for left,top,right,bottom in grid_bounds)]
     tables.extend(_aligned_tables(unassigned, image.shape[1]))
     return {'slide_number': number, 'printed_slide_number': _printed_number(boxes, image.shape[0]),
             'source': name, 'ocr_status': status, 'text': ocr['text'] if status == 'ok' else None,

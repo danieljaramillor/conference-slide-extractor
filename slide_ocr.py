@@ -21,7 +21,11 @@ _SIGNED_NUMBER = re.compile(r'(?<![\w.,])[-+−]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+
 _COUNT_THEN_PERCENT = re.compile(r'(\d+\s*/\s*\d+)\s*,\s*(?=\d+(?:[.,]\d+)?\s*%)')
 _BIBLIOGRAPHY_PAGES = re.compile(r'(\b(?:19|20)\d{2}\s*[:;, ]\s*\d+\s*:\s*\d+)\s*–\s*-\s*(?=\d+\b)')
 _CITATION = re.compile(r'(?<=\w)[\{\^]\d{1,4}\s*$')
-_AFFILIATION = re.compile(r'\b(?:hospital|university|institute|department|college|cent(?:er|re)|oncology)\b', re.I)
+_FUSED_CITATION = re.compile(r'\b([A-Za-z][A-Za-z0-9]{2,}/\d)([ilI])?(\d{1,2})\s*$')
+_REFERENCE_TEXT = re.compile(r'\b(?:publications?|references?|citations?|bibliography)\b', re.I)
+_REFERENCE_LIST = re.compile(r'\d{1,2},\s*\d{1,2}\s*$')
+_AFFILIATION = re.compile(r'(?<![^\W\d_])(?:hospital|universit[^\W\d_]*|institute|department|college|cent(?:er|re)|oncology|ltd)\b', re.I)
+_AFFILIATION_MARKER = re.compile(r'(^|;\s*)(?:\d{1,2}�?|[¹²³⁴⁵⁶⁷⁸⁹⁰]{1,2}|&)(?=[^\W\d_])')
 
 
 def engine():
@@ -175,6 +179,12 @@ def _numeric_box(shape, a, b, pad):
     return x1, y1, x2, y2
 
 
+def _compact_stroke(signed):
+    return any(cv2.erode((polarity >= 11).astype(np.uint8), np.ones((2, 2), np.uint8),
+                         borderType=cv2.BORDER_CONSTANT, borderValue=0).any()
+               for polarity in (signed, -signed))
+
+
 def _same_numeric_pixels(left, right, a, b):
     if left.shape != right.shape:
         return False
@@ -190,32 +200,59 @@ def _same_numeric_pixels(left, right, a, b):
         return False
     # JPEG fringes can create connected differences where opposite brightness
     # changes meet. Preserve a coherent change of even a faint 2x2 glyph.
-    for polarity in (signed, -signed):
-        ink = (polarity >= 11).astype(np.uint8)
-        if cv2.erode(ink, np.ones((2, 2), np.uint8), borderType=cv2.BORDER_CONSTANT,
-                     borderValue=0).any():
-            return False
-    return True
+    return not _compact_stroke(signed)
 
 
 def _same_reference_pixels(left, right, a, b):
-    """Allow compression noise in reference markers after checking their ink."""
+    """Check native pixels when OCR disagrees about an inline reference."""
+    if left.shape != right.shape:
+        return False
     texts = a['text'], b['text']
     citation = all(_CITATION.search(text) for text in texts)
+    first, second = (_FUSED_CITATION.search(text) for text in texts)
+    if not citation and first and second:
+        citation = (first[0] != second[0] and first[2] != second[2]
+                    and first[1] == second[1] and first[3] == second[3]
+                    and texts[0][:first.start()] == texts[1][:second.start()])
     affiliation = all(text.count(',') >= 3 and (re.search(r'[¹²³⁴⁵⁶⁷⁸⁹⁰]', text) or
                       len(re.findall(r',\s*\d{1,2}\b', text)) >= 3 or
-                      (text.count(';') >= 2 and _AFFILIATION.search(text))) for text in texts)
-    if left.shape != right.shape or not (citation or affiliation):
+                      (_AFFILIATION.search(text) and
+                       (text.count(';') >= 2 or _AFFILIATION_MARKER.search(text)))) for text in texts)
+    # Use the relaxed antialiasing check only for a change in the reference
+    # markers themselves. Body digits and affiliation names stay protected.
+    affiliation_markers = affiliation and (
+        _AFFILIATION_MARKER.sub(r'\1', texts[0]) == _AFFILIATION_MARKER.sub(r'\1', texts[1])
+    )
+    references = all(_REFERENCE_TEXT.search(text) and _REFERENCE_LIST.search(text) for text in texts)
+    if not (citation or affiliation or references):
         return False
     x1, y1, x2, y2 = _numeric_box(left.shape, a, b, 2)
     if x2 - x1 < 5 or y2 - y1 < 5:
         return False
-    patches = [cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY) for image in (left, right)]
-    delta = cv2.absdiff(*(cv2.GaussianBlur(patch, (3, 3), 0) for patch in patches))
-    # A compact surviving stroke can be a real reference amendment.
+    patches = [cv2.GaussianBlur(image[y1:y2, x1:x2], (3, 3), 0) for image in (left, right)]
+    gray_a, gray_b = (cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY) for patch in patches)
+    delta = cv2.absdiff(gray_a, gray_b)
     core = cv2.erode((delta > 12).astype(np.uint8), np.ones((2, 2), np.uint8),
                      borderType=cv2.BORDER_CONSTANT, borderValue=0)
-    return delta.max() <= 20 and not core.any()
+    if delta.max() <= 20 and not core.any() and (citation or affiliation):
+        return True
+    # A numbered reference list can cause a nearby marker or punctuation to
+    # be read as a value. Require unusually close agreement for the whole line.
+    if references and delta.max() <= 9 and cv2.absdiff(*patches).max() <= 16:
+        return True
+    if not affiliation_markers or not (delta.max() <= 32 and delta.mean() <= 2.2):
+        return False
+    # A stable dark stroke may be sharpened differently from one JPEG to the
+    # next. Test whether the residual still follows the same stroke on both.
+    active = delta > 12
+    dilated_a, dilated_b = (cv2.dilate(gray, np.ones((3, 3), np.uint8)) for gray in (gray_a, gray_b))
+    pale = np.minimum(dilated_a, dilated_b)
+    dark = np.maximum(gray_a, gray_b)
+    unsupported = active & (pale.astype(np.int16) - dark < 8)
+    unsupported_core = cv2.erode(unsupported.astype(np.uint8), np.ones((2, 2), np.uint8),
+                                 borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    return (np.count_nonzero(active) <= 30 and np.count_nonzero(unsupported) <= 4
+            and not unsupported_core.any())
 
 
 def _white_arrow_on_dark(stroke, covered, clear):
@@ -232,19 +269,12 @@ def _white_arrow_on_dark(stroke, covered, clear):
             and np.count_nonzero(bright[round(.72*height):, width//2:]) >= 2)
 
 
-def _cursor_occludes(covered, clear, shorter, longer):
+def _cursor_bounds(covered, clear, first, second):
     if covered.shape != clear.shape:
-        return False
-    before, after = shorter['numbers'], longer['numbers']
-    removed_token = len(after) == len(before) + 1 and len(after[0]) <= 2 and after[1:] == before
-    shortened = (len(before) == len(after) and sum(x != y for x, y in zip(before, after)) == 1
-                 and any(0 < len(y)-len(x) <= 2 and (y.endswith(x) or y.startswith(x))
-                         for x, y in zip(before, after)))
-    if not (removed_token or shortened):
-        return False
-    x1, y1, x2, y2 = _numeric_box(covered.shape, shorter, longer, 5)
+        return None
+    x1, y1, x2, y2 = _numeric_box(covered.shape, first, second, 5)
     if x2 - x1 < 6 or y2 - y1 < 9:
-        return False
+        return None
     levels = [cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY).astype(np.int16)
               for image in (covered, clear)]
     signed = levels[0] - levels[1]
@@ -267,9 +297,53 @@ def _cursor_occludes(covered, clear, shorter, longer):
                        or np.mean(pale[-3:]) >= .72)
         if (np.count_nonzero((left_edge < -65).any(axis=1)) >= .5 * h
                 and bright_fill and np.count_nonzero(tip < -50) >= 4):
-            return True
+            return x1 + x, y1 + y, w, h
         position = np.s_[y:y+h, x:x+w]
         if _white_arrow_on_dark(stroke, levels[0][position], levels[1][position]):
+            return x1 + x, y1 + y, w, h
+    return None
+
+
+def _cursor_occludes(covered, clear, shorter, longer):
+    before, after = shorter['numbers'], longer['numbers']
+    removed_token = len(after) == len(before) + 1 and len(after[0]) <= 2 and after[1:] == before
+    shortened = (len(before) == len(after) and sum(x != y for x, y in zip(before, after)) == 1
+                 and any(0 < len(y)-len(x) <= 2 and (y.endswith(x) or y.startswith(x))
+                         for x, y in zip(before, after)))
+    return bool((removed_token or shortened) and _cursor_bounds(covered, clear, shorter, longer))
+
+
+def _cursor_omits_decimal(covered, clear, first, second):
+    """Require the physical decimal glyph to survive outside a fitted pointer."""
+    before, after = first['numbers'][0], second['numbers'][0]
+    if not re.fullmatch(r'-?\d+\.\d+', after) or before != after.replace('.', ''):
+        return False
+    cursor = _cursor_bounds(covered, clear, first, second)
+    if cursor is None:
+        return False
+    x, y, width, height = cursor
+    x1, y1, x2, y2 = _numeric_box(clear.shape, first, second, 5)
+    y2 = min(clear.shape[0], max(y2, y + 2 * height))
+    x, y = x - x1, y - y1
+    a, b = (cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY) for image in (covered, clear))
+    delta = cv2.absdiff(a, b)
+    outside = delta.copy()
+    outside[max(0, y - 2):y + height + 2, max(0, x - 2):x + width + 2] = 0
+    if outside.max() > 21 or _compact_stroke(outside.astype(np.int16)):
+        return False
+    ink = (b < min(135, np.median(b) - 60)).astype(np.uint8)
+    _, _, components, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    for dx, dy, dw, dh, area in components[1:]:
+        if (not (1 <= dw <= 4 and 1 <= dh <= 4 and area >= 3)
+                or abs(dx - x) > max(3, width // 2)
+                or not y + height + 2 <= dy <= y + height + 10
+                or delta[dy:dy + dh, dx:dx + dw].max() > 10):
+            continue
+        baseline = dy + dh
+        nearby_digits = [px for px, py, pw, ph, _ in components[1:]
+                         if ph >= height * .65 and abs(py + ph - baseline) <= 2
+                         and abs(px - dx) <= height]
+        if any(px < dx for px in nearby_digits) and any(px > dx for px in nearby_digits):
             return True
     return False
 
@@ -285,7 +359,42 @@ def _recognize_cell(patch):
     return '', 0.
 
 
-def local_numeric_evidence(left, right, *, occlusions=None):
+def _read_numeric_patch(patch):
+    try:
+        return _recognize_cell(patch)
+    except (cv2.error, OSError, RuntimeError, ValueError):
+        return '', 0.
+
+
+def _numeric_review(bounds_a, bounds_b, text_a, text_b, read_a, read_b):
+    return {'bounds_a': list(map(int, bounds_a)), 'bounds_b': list(map(int, bounds_b)),
+            'text_a': text_a, 'text_b': text_b, 'read_a': read_a[0], 'read_b': read_b[0],
+            'confidence_a': round(read_a[1], 4), 'confidence_b': round(read_b[1], 4)}
+
+
+def _reread_numeric_line(left, right, a, b):
+    if left.shape != right.shape:
+        return False, None
+    x1, y1, x2, y2 = bounds = _numeric_box(left.shape, a, b, 3)
+    if not (5 <= y2 - y1 <= left.shape[0] * .10 and 7 <= x2 - x1 <= left.shape[1] * .55):
+        return False, None
+    patches = [image[y1:y2, x1:x2] for image in (left, right)]
+    reads = [_read_numeric_patch(patch) for patch in patches]
+    values = [_values(numeric_text(read[0])) for read in reads]
+    strong = all(values) and min(read[1] for read in reads) >= .94
+    if strong and values == [a['numbers'], b['numbers']]:
+        return False, None
+    if strong and values[0] == values[1] and normalized(reads[0][0]) == normalized(reads[1][0]):
+        gray = [cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY) for patch in patches]
+        signed = np.subtract(*gray, dtype=np.int16)
+        blurred = [cv2.GaussianBlur(image, (3, 3), 0) for image in gray]
+        delta = cv2.absdiff(*blurred)
+        if delta.max() <= 22 and not _compact_stroke(signed):
+            return True, None
+    return False, _numeric_review(bounds, bounds, a['text'], b['text'], *reads)
+
+
+def local_numeric_evidence(left, right, *, occlusions=None, unresolved=None):
     """Reread isolated glyph changes that full-slide OCR could miss."""
     if left.shape != right.shape:
         return []
@@ -307,8 +416,9 @@ def local_numeric_evidence(left, right, *, occlusions=None):
             continue
         x1, x2 = max(0, x - glyph_height), min(width, x + w + glyph_height)
         y1, y2 = max(0, y - 4), min(height, y + h + 4)
-        a, b = (_recognize_cell(image[y1:y2, x1:x2]) for image in (left, right))
-        if min(a[1], b[1]) < .94:
+        a, b = (_read_numeric_patch(image[y1:y2, x1:x2]) for image in (left, right))
+        confidence = min(a[1], b[1])
+        if confidence < (.78 if unresolved is not None else .94):
             continue
         if not all(_SIGNED_NUMBER.fullmatch(numeric_text(value)) for value, _ in (a, b)):
             continue
@@ -325,16 +435,29 @@ def local_numeric_evidence(left, right, *, occlusions=None):
             if occlusions is not None:
                 occlusions.append('b')
             continue
+        if confidence < .94:
+            reads, lines, images = (a, b), (first, second), (left, right)
+            for index, other in ((0, 1), (1, 0)):
+                if (reads[index][1] < .94 <= reads[other][1]
+                        and _cursor_omits_decimal(images[index], images[other], lines[index], lines[other])):
+                    if occlusions is not None:
+                        occlusions.append('ab'[index])
+                    break
+            else:
+                bounds = (x1, y1, x2, y2)
+                unresolved.append(_numeric_review(bounds, bounds, '', '', a, b))
+            continue
         return [[a[0], b[0]]]
     return []
 
 
-def text_evidence(a,b,*,native_pair=None):
+def text_evidence(a,b,*,native_pair=None,reread_numeric=False):
     ta,ha,la=signature(a); tb,hb,lb=signature(b)
     shared=sum((ta&tb).values())
     ca=shared/max(1,sum(ta.values())); cb=shared/max(1,sum(tb.values()))
     heading=SequenceMatcher(None,ha,hb).ratio() if ha and hb else 0.
-    numeric_changes, numeric_occlusions = [], []
+    numeric_changes, numeric_occlusions, numeric_reviews = [], [], []
+    rereads = 0
     if max(ca,cb)>.65 or heading>.80:
         images = None
         for line_a, line_b in _matched_numeric_lines(_numeric_lines(a, la), _numeric_lines(b, lb)):
@@ -351,10 +474,19 @@ def text_evidence(a,b,*,native_pair=None):
                 if _cursor_occludes(right, left, line_b, line_a):
                     numeric_occlusions.append('b')
                     continue
+                if reread_numeric and rereads < 3:
+                    rereads += 1
+                    same, review = _reread_numeric_line(left, right, line_a, line_b)
+                    if same:
+                        continue
+                    if review is not None:
+                        numeric_reviews.append(review)
             numeric_changes.append([line_a['text'], line_b['text']])
-            break
+            if not reread_numeric or rereads >= 3 or len(numeric_changes) >= 3:
+                break
     return {'text_cover_a':round(ca,4),'text_cover_b':round(cb,4),
             'heading_similarity':round(heading,4),'numeric_conflict':bool(numeric_changes),
             'numeric_changes':numeric_changes,
+            'numeric_reviews':numeric_reviews,
             'numeric_occlusions': sorted(set(numeric_occlusions)),
             'text_words_a':sum(ta.values()),'text_words_b':sum(tb.values())}

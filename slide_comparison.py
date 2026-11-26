@@ -232,6 +232,140 @@ def has_added_chart_outlines(earlier, later):
     return np.count_nonzero(increased & supported) >= supported_count * .86
 
 
+def _projected_alignment(clean_gray, projected_gray):
+    """Find a frame-wide alignment between a slide and its on-stage projection."""
+    height, width = clean_gray.shape
+    equalizer = cv2.createCLAHE(clipLimit=2., tileGridSize=(8, 8))
+    detector = cv2.SIFT_create(nfeatures=1800, contrastThreshold=.014)
+    keypoints, descriptors = zip(*(detector.detectAndCompute(equalizer.apply(gray), None)
+                                  for gray in (clean_gray, projected_gray)))
+    if any(vector is None or len(vector) < 80 for vector in descriptors):
+        return None
+    matcher = cv2.BFMatcher()
+    forward, backward = (
+        {best.queryIdx: best.trainIdx for best, alternate in matcher.knnMatch(first, second, k=2)
+         if best.distance < .74 * alternate.distance}
+        for first, second in (descriptors, descriptors[::-1])
+    )
+    matches = [(a, b) for a, b in forward.items() if backward.get(b) == a]
+    if len(matches) < 80:
+        return None
+    left, right = (np.float32([points[match[side]].pt for match in matches])
+                   for side, points in enumerate(keypoints))
+    transform, inliers = cv2.findHomography(right, left, cv2.RANSAC, 1.8)
+    if transform is None or inliers is None or inliers.mean() < .80:
+        return None
+    reliable = left[inliers.ravel() > 0]
+    quadrant = (reliable > [width / 2, height / 2]) @ [1, 2]
+    if ((np.bincount(quadrant, minlength=4) < 12).any()
+            or (np.ptp(reliable, axis=0) < [.75 * width, .72 * height]).any()):
+        return None
+    corners = np.float32([[[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]])
+    distance = np.abs(cv2.perspectiveTransform(corners, transform) - corners)
+    if (distance > [width * .025, height * .025]).any():
+        return None
+    return transform
+
+
+def _same_projected_print(clean_gray, projected_gray, valid):
+    """Require matching local ink despite projector blur and minor lens distortion."""
+    def detail(gray, sigma):
+        gray = gray.astype(np.float32)
+        return cv2.GaussianBlur(gray, (0, 0), sigma) - cv2.GaussianBlur(gray, (0, 0), 3.5)
+
+    def average(plane, size=7):
+        return cv2.boxFilter(plane, -1, (size, size))
+
+    clean = detail(clean_gray, 1.15)
+    projected = detail(projected_gray, .8)
+    for first, second in ((clean, projected), (projected, clean)):
+        activity = average(first * first)
+        best = np.full_like(first, -1)
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                shifted = np.roll(second, (dy, dx), axis=(0, 1))
+                support = np.sqrt(np.maximum(.0001, activity * average(shifted * shifted)))
+                correlation = average(first * shifted) / support
+                np.maximum(best, correlation, out=best)
+        unmatched = valid & (((best < .35) & (activity > 12)) | ((best < .50) & (activity > 40)))
+        _, _, regions, _ = cv2.connectedComponentsWithStats(unmatched.astype(np.uint8), connectivity=8)
+        if any(w >= 2 and h >= 2 and area >= 9 for _, _, w, h, area in regions[1:]):
+            return False
+
+    # Neighboring unchanged digits can dominate the tolerant comparison.
+    # Check for a tight residual above the noise measured across this slide.
+    clean, projected = (detail(gray, .85) for gray in (clean_gray, projected_gray))
+    energy_a, energy_b, shared = (average(plane, 5) for plane in
+                                  (clean * clean, projected * projected, clean * projected))
+    power = np.maximum(energy_a, energy_b)
+    active = valid & (power > 16)
+    if not active.any():
+        return False
+    similarity = shared / np.sqrt(np.maximum(.0001, energy_a * energy_b))
+    residual = (1 - similarity) * np.sqrt(power)
+    threshold = max(2.5, 3.1 * np.quantile(residual[active], .99))
+    isolated = active & (residual > threshold)
+    _, _, regions, _ = cv2.connectedComponentsWithStats(isolated.astype(np.uint8), connectivity=8)
+    return not any(w >= 2 and h >= 2 and area >= 5 for _, _, w, h, area in regions[1:])
+
+
+def _same_projected_colors(clean, projected, valid):
+    """Check that the residual colors fit a whole-frame tint and light falloff."""
+    height, width = valid.shape
+    clean, projected = (cv2.GaussianBlur(image, (7, 7), 0).astype(np.float32) / 255
+                        for image in (clean, projected))
+    if np.mean(np.abs(clean - projected)[valid]) < .04:
+        return False
+    y, x = np.meshgrid(np.linspace(-1, 1, height, dtype=np.float32),
+                       np.linspace(-1, 1, width, dtype=np.float32), indexing='ij')
+    blue, green, red = clean.transpose(2, 0, 1)
+    luminance = .114 * blue + .587 * green + .299 * red
+    spatial = (x, y, x * y, x * x, y * y)
+    color = (blue, green, red, blue * blue, green * green, red * red,
+             blue * green, blue * red, green * red)
+    features = np.stack((np.ones_like(blue), *color, *spatial,
+                         *(luminance * field for field in spatial)), axis=2)
+    sampled = features[valid][::13]
+    observed = projected[valid][::13]
+    for _ in range(3):
+        coefficients = np.linalg.lstsq(sampled, observed, rcond=.0005)[0]
+        error = np.max(np.abs(sampled @ coefficients - observed), axis=1)
+        regular = error <= np.quantile(error, .965)
+        sampled, observed = sampled[regular], observed[regular]
+    residual = np.max(np.abs(features @ coefficients - projected), axis=2)
+    return bool((np.quantile(residual[valid], [.90, .99, .999]) <= [15 / 255, 34 / 255, 52 / 255]).all())
+
+
+def tint_duplicate(left, right):
+    """Verify a nearby projected capture repeats the same printed slide."""
+    clean, projected = sorted((left, right), key=lambda image: image.shape[0] * image.shape[1], reverse=True)
+    height, width = projected.shape[:2]
+    if (height < 300 or min(width, clean.shape[1]) < 550
+            or abs((clean.shape[1] / clean.shape[0]) / (width / height) - 1) > .08
+            or clean.shape[0] * clean.shape[1] < 1.35 * height * width):
+        return False
+    scale = min(1., 780 / width)
+    width, height = round(width * scale), round(height * scale)
+    size = (width, height)
+    clean, projected = (cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+                        for image in (clean, projected))
+    clean_gray, projected_gray = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                                  for image in (clean, projected))
+    transform = _projected_alignment(clean_gray, projected_gray)
+    if transform is None:
+        return False
+    projected = cv2.warpPerspective(projected, transform, size)
+    projected_gray = cv2.cvtColor(projected, cv2.COLOR_BGR2GRAY)
+    valid = cv2.warpPerspective(np.full((height, width), 255, np.uint8), transform, size) == 255
+    if valid.mean() < .96:
+        return False
+    valid = cv2.erode(valid.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+    # Exclude the projected crop's edge and the boundary of the warp.
+    valid[:12, :] = valid[-12:, :] = valid[:, :12] = valid[:, -12:] = False
+    return (_same_projected_print(clean_gray, projected_gray, valid)
+            and _same_projected_colors(clean, projected, valid))
+
+
 def compare_captures(left, right, left_item=None, right_item=None):
     """Return visible regions and conservative, advisory build evidence."""
     left_height, left_width = left.shape[:2]
