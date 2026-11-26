@@ -53,6 +53,13 @@ class NumericEvidenceTests(unittest.TestCase):
                 right[197:197 + glyph[0], 674:674 + glyph[1]] -= delta
                 self.assertTrue(text_evidence(a, b, native_pair=lambda: (left, right))['numeric_conflict'])
 
+    def test_missing_range_separator_differs_from_a_changed_range_value(self):
+        original = _capture(('(29.0-46.9)', 185, 20))
+        missing_separator = _capture(('(29.046.9)', 185, 20))
+        changed_endpoint = _capture(('(29.0-47.9)', 185, 20))
+        self.assertFalse(text_evidence(original, missing_separator)['numeric_conflict'])
+        self.assertTrue(text_evidence(original, changed_endpoint)['numeric_conflict'])
+
 
 if __name__ == '__main__':
     unittest.main()

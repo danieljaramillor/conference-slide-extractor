@@ -115,9 +115,13 @@ def signature(item):
     rich=[]
     for line in lines:
         text=numeric_text(line['text'])
+        numbers=_NUMBER.findall(text)
+        # A decimal and an integer can occupy the same cell. Preserve the
+        # existing template structure for ranges and other multi-number lines.
+        template=(' '.join(re.findall(r'\w+|#', _NUMBER.sub('#', text))) if len(numbers)==1
+                  else _NUMBER.sub('#', normalized(text)))
         rich.append({**line,'center':np.asarray(line['box']).mean(axis=0)/[item['slide_width'],item['slide_height']],
-                     'numbers':_NUMBER.findall(text),
-                     'template':' '.join(re.findall(r'\w+|#', _NUMBER.sub('#', text)))})
+                     'numbers':numbers, 'template':template})
     item['_text_signature']=(tokens,normalized(' '.join(l['text'] for l in headings)),rich)
     return item['_text_signature']
 
