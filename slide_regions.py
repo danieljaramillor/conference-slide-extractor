@@ -165,3 +165,41 @@ def quality(image):
     gray=cv2.cvtColor(cv2.resize(image,(480,270),interpolation=cv2.INTER_AREA),cv2.COLOR_BGR2GRAY)
     return {'slide_width':w,'slide_height':h,'slide_pixels':w*h,
             'sharpness':float(cv2.Laplacian(cv2.GaussianBlur(gray,(3,3),0),cv2.CV_32F).var())}
+
+
+def recover_projected_screen(crop, region):
+    """Find a visible projection inside an inset that encloses a stage camera."""
+    if region['crop_mode'] != 'auto-inset' or region.get('quad') is not None:
+        return None
+    # A dark venue or speaker-only inset is a candidate. Leave bright slides
+    # and original full-frame slides to the normal detector.
+    preview = cv2.cvtColor(cv2.resize(crop, (480, 270), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    if float(np.mean(preview < 50)) < .53:
+        return None
+    bright = (preview > 110).astype(np.uint8) * 255
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(bright, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:3]:
+        area = cv2.contourArea(contour) / preview.size
+        if not .19 < area < .58:
+            continue
+        quad = cv2.approxPolyDP(contour, .025 * cv2.arcLength(contour, True), True)
+        if len(quad) != 4 or not cv2.isContourConvex(quad):
+            continue
+        points = order_quad(quad)
+        left, top = points.min(axis=0)
+        right, bottom = points.max(axis=0)
+        if left < 20 or right > 460 or top < 6 or bottom > 220:
+            continue
+        if abs(points[0, 1] - points[1, 1]) < 9:
+            continue  # Require perspective evidence to avoid charts on dark slides.
+        width = (np.linalg.norm(points[1] - points[0]) + np.linalg.norm(points[2] - points[3])) / 2
+        height = (np.linalg.norm(points[3] - points[0]) + np.linalg.norm(points[2] - points[1])) / 2
+        if not 1.18 < width / height < 2.25 or _text_strokes(preview[int(top):int(bottom), int(left):int(right)]) < 15:
+            continue
+        x1, y1, x2, y2 = region['crop']
+        source_points = points / [480, 270] * [x2 - x1, y2 - y1] + [x1, y1]
+        low, high = source_points.min(axis=0), source_points.max(axis=0)
+        return {**region, 'crop': (*low.tolist(), *high.tolist()), 'quad': source_points.tolist(),
+                'crop_mode': 'projected-screen', 'crop_confidence': .80}
+    return None

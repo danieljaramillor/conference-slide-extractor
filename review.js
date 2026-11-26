@@ -170,7 +170,55 @@ $('merge').onclick=()=>{
 $('ack').onclick=()=>{for(const g of groups)if(selected.has(g.id))g.acknowledged=true;selected.clear();lastPairDecision=null;persist();render();notify('Marked checked.')};
 $('save').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(payload(),null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='review-decisions.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Decisions downloaded.')};
 $('load').onclick=()=>$('loadfile').click();$('loadfile').onchange=async e=>{try{restore(JSON.parse(await e.target.files[0].text()));persist();render();notify('Decisions loaded')}catch(err){notify(err.message)}};
-$('export').hidden=!server;$('export').onclick=async()=>{ $('export').disabled=true;notify('Exporting native-resolution slides and text…');try{const r=await fetch('export',{method:'POST',headers:{'Content-Type':'application/json','X-Review-Token':REVIEW_TOKEN},body:JSON.stringify(payload())}),d=await r.json();if(!r.ok)throw Error(d.error);$('download').href=d.download;$('download').download=d.download;$('download').hidden=false;notify(`Exported ${d.count} slides to ${d.directory}. Download the ZIP above.`)}catch(err){notify(err.message)}finally{$('export').disabled=false}};
+function exportFilename(){
+ const basename=data.source.split(/[\\/]/).pop().replace(/\.zip$/i,'');
+ const safe=basename.replace(/[<>:"/\\|?*\u0000-\u001f]/g,'-');
+ return `${safe==='input'||!safe?'conference':safe}-slides.zip`;
+}
+
+async function pickExportFile(){
+ if(typeof window.showSaveFilePicker!=='function')return null;
+ try{
+  return await window.showSaveFilePicker({suggestedName:exportFilename(),
+   types:[{description:'ZIP archive',accept:{'application/zip':['.zip']}}]});
+ }catch(error){
+  if(error.name==='AbortError')throw error;
+  // Embedded browsers and restricted contexts may only support downloads.
+  return null;
+ }
+}
+
+$('export').hidden=!server;
+if(typeof window.showSaveFilePicker==='function')$('export').textContent='Export ZIP…';
+$('export').onclick=async()=>{
+ $('export').disabled=true;
+ try{
+  // Open Save As while the click still grants browser permission.
+  const destination=await pickExportFile();
+  $('download').hidden=true;
+  notify('Preparing the ZIP with slides, originals, and text…');
+  const response=await fetch('export',{method:'POST',headers:{'Content-Type':'application/json','X-Review-Token':REVIEW_TOKEN},body:JSON.stringify(payload())});
+  const result=await response.json();
+  if(!response.ok)throw Error(result.error);
+  $('download').href=result.download;
+  $('download').download=exportFilename();
+  $('download').hidden=false;
+  if(!destination){
+   notify(`ZIP ready with ${result.count} slides. Select Download export ZIP to save it.`);
+   return;
+  }
+  try{
+   const zip=await fetch(result.download);
+   if(!zip.ok||!zip.body)throw Error('The export ZIP could not be opened.');
+   await zip.body.pipeTo(await destination.createWritable());
+   notify(`Saved ${result.count} slides in ${destination.name}.`);
+  }catch(error){
+   notify(`Could not save to the chosen location. Use Download export ZIP to save the completed file. ${error.message}`);
+  }
+ }catch(error){
+  notify(error.name==='AbortError'?'Export canceled.':error.message);
+ }finally{$('export').disabled=false}
+};
 function closeZoom(){$('lightbox').style.display='none'}$('lightbox').querySelector('button').onclick=closeZoom;
 function drawCrop(b){Object.assign($('cropselection').style,{left:b[0]*100+'%',top:b[1]*100+'%',width:(b[2]-b[0])*100+'%',height:(b[3]-b[1])*100+'%'})}
 function cropValues(){return ['cx1','cy1','cx2','cy2'].map(id=>+$(id).value/100)}

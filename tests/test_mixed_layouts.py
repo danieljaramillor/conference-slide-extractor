@@ -11,9 +11,10 @@ import cv2
 import numpy as np
 
 import slide_dedupe as sd
-from slide_regions import detect_region,extract
+from slide_regions import detect_region, extract, recover_projected_screen
 from slide_ocr import text_evidence
 from mixed_fixtures import fixtures
+from test_slide_dedupe import broadcast, slide
 
 
 class LayoutTests(unittest.TestCase):
@@ -50,6 +51,27 @@ class LayoutTests(unittest.TestCase):
         region=detect_region(image)
         self.assertEqual(region['crop_mode'],'full')
         np.testing.assert_array_equal(extract(image,region),image)
+
+    def test_recovers_screen_inside_a_dark_stage_camera_inset(self):
+        content = slide()
+        for index in range(8):
+            cv2.putText(content, f'Cohort {index}: baseline outcome for patients',
+                        (50, 192 + index * 36), cv2.FONT_HERSHEY_SIMPLEX, .65, (90, 30, 10), 2)
+        venue = np.full((900, 1600, 3), 12, np.uint8)
+        corners = np.float32([[0, 0], [959, 0], [959, 539], [0, 539]])
+        screen = np.float32([[350, 190], [1180, 100], [1195, 590], [330, 605]])
+        projection = cv2.warpPerspective(content, cv2.getPerspectiveTransform(corners, screen), (1600, 900))
+        visible = np.any(projection != 0, axis=2)
+        venue[visible] = projection[visible]
+        frame = broadcast(venue, (20, 30, 45))
+        outer = detect_region(frame)
+        recovered = recover_projected_screen(extract(frame, outer), outer)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered['crop_mode'], 'projected-screen')
+        inner = extract(frame, recovered)
+        self.assertLess(inner.shape[1], 850)
+        self.assertLess(inner.shape[0], 480)
+        self.assertGreater(np.median(inner), 200)
 
     def test_high_resolution_duplicate_wins_over_small_frame(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -32,6 +32,7 @@ def check(program, python, fixture, screenshot):
                         route.abort()
 
                 page.route('**/*', allow_loopback)
+                page.add_init_script('window.showSaveFilePicker = undefined;')
                 page.goto(url)
                 page.locator('#archive').set_input_files({'name': 'invalid.zip', 'mimeType': 'application/zip',
                                                          'buffer': b'invalid archive'})

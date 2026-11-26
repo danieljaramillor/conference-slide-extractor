@@ -15,6 +15,10 @@ Pair decisions move you to the next unresolved suggestion and save to the batch.
 
 If a crop is wrong, select **Adjust crop**, drag around the slide, and apply it. Export refreshes OCR for changed crops and selected captures that lack text. The ZIP includes `slides/`, `originals/`, `text/`, and `mapping.csv`.
 
+## Choose where the ZIP goes
+
+In desktop Chrome or Edge, click **Export ZIP…** to open the browser’s Save As dialog. Choose a folder and filename. The app prepares the export and writes it to that file. Canceling Save As cancels the export. Some embedded browsers only show **Export slides**. In that case use the **Download export ZIP** link and enable the browser’s “Ask where to save each file before downloading” option if you need to choose a folder.
+
 ## Common problems
 
 - **Browser did not open.** Open the `http://127.0.0.1:…` address printed in the app window.

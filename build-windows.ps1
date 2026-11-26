@@ -1,10 +1,12 @@
 param(
-    [string]$Python = "$PSScriptRoot\.venv\Scripts\python.exe"
+    [string]$Python = "$PSScriptRoot\.venv\Scripts\python.exe",
+    [string]$OutputDirectory = "$PSScriptRoot\dist"
 )
 $ErrorActionPreference = 'Stop'
 Push-Location -LiteralPath $PSScriptRoot
 try {
-    & $Python -m PyInstaller --noconfirm --clean --onefile --noupx `
+    $workDirectory = Join-Path "$PSScriptRoot\build" ([guid]::NewGuid().ToString('N'))
+    & $Python -m PyInstaller --noconfirm --onefile --noupx --workpath $workDirectory --distpath $OutputDirectory `
         --name ConferenceSlideExtractor-Windows-x64 `
         --add-data 'batch_app.html:.' --add-data 'review_template.html:.' --add-data 'review.js:.' `
         --collect-data rapidocr --collect-data cv2 --collect-binaries onnxruntime `
@@ -13,9 +15,9 @@ try {
         --copy-metadata Pillow --copy-metadata numpy --copy-metadata pyinstaller `
         desktop_app.py
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller exited with code $LASTEXITCODE" }
-    $executable = Join-Path $PSScriptRoot 'dist\ConferenceSlideExtractor-Windows-x64.exe'
+    $executable = Join-Path $OutputDirectory 'ConferenceSlideExtractor-Windows-x64.exe'
     $hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$hash  ConferenceSlideExtractor-Windows-x64.exe" | Set-Content -Encoding ascii (Join-Path $PSScriptRoot 'dist\SHA256SUMS.txt')
+    "$hash  ConferenceSlideExtractor-Windows-x64.exe" | Set-Content -Encoding ascii (Join-Path $OutputDirectory 'SHA256SUMS.txt')
     Get-Item -LiteralPath $executable | Select-Object FullName,Length
 }
 finally {

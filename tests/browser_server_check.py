@@ -22,6 +22,20 @@ def check(directory):
             browser=p.chromium.launch(executable_path=r'C:\Program Files\Google\Chrome\Application\chrome.exe',headless=True)
             page=browser.new_page(viewport={'width':1440,'height':1000})
             errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            page.add_init_script('''
+                window.savedZipBytes = [];
+                window.cancelDestination = true;
+                window.showSaveFilePicker = async options => {
+                    window.suggestedZip = options.suggestedName;
+                    if (window.cancelDestination) throw new DOMException('Canceled', 'AbortError');
+                    return {
+                        name: 'reviewed-conference.zip',
+                        createWritable: async () => new WritableStream({
+                            write(bytes) { window.savedZipBytes.push(Array.from(bytes.slice(0, 4))); }
+                        })
+                    };
+                };
+            ''')
             page.goto(base)
             page.wait_for_function("typeof groups !== 'undefined'")
             page.locator('#slides-tab').click()
@@ -38,7 +52,13 @@ def check(directory):
             assert (root/'review-state.json').exists()
             page.reload();page.wait_for_function('Object.keys(crops).length===1')
             page.locator('#export').click()
-            page.wait_for_function("!document.getElementById('download').hidden",timeout=90000)
+            page.wait_for_function("document.getElementById('status').textContent === 'Export canceled.'")
+            assert not list(root.glob('reviewed-*.zip'))
+            page.evaluate('window.cancelDestination=false')
+            page.locator('#export').click()
+            page.wait_for_function("document.getElementById('status').textContent.includes('reviewed-conference.zip')",timeout=90000)
+            assert page.evaluate('window.suggestedZip.endsWith("-slides.zip")')
+            assert page.evaluate('window.savedZipBytes[0]') == [80, 75, 3, 4]
             download=page.locator('#download').get_attribute('href')
             assert (root/download).is_file()
             second=build_server(root)
@@ -50,7 +70,7 @@ def check(directory):
                 second.shutdown();second.server_close();second.slide_source.close();second_thread.join()
             assert not errors,errors
             browser.close()
-        print('Browser server checks passed: native image, crop editor, persistent review, one-click ZIP export; no JavaScript errors.')
+        print('Browser server checks passed: native image, crop editor, persistent review, canceled and successful Save As; no JavaScript errors.')
     finally:
         server.shutdown();server.server_close();server.slide_source.close();thread.join()
 

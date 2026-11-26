@@ -49,6 +49,28 @@ class MatchingTests(unittest.TestCase):
         self.assertTrue(metric['build'], metric)
         self.assertFalse(metric['duplicate'])
 
+    def test_small_panel_reveal_beats_an_equally_sharp_earlier_capture(self):
+        early = slide()
+        for index in range(8):
+            cv2.putText(early, f'Cohort {index}: baseline outcome for patients',
+                        (50, 192 + index * 36), cv2.FONT_HERSHEY_SIMPLEX, .65, (90, 30, 10), 2)
+        complete = early.copy()
+        cv2.putText(complete, '47.8%', (658, 322), cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 0, 0), 2)
+        cv2.rectangle(complete, (646, 286), (774, 344), (80, 30, 90), 3)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / 'slides.zip'
+            with zipfile.ZipFile(archive, 'w') as images:
+                images.writestr('01.png', cv2.imencode('.png', early)[1].tobytes())
+                images.writestr('02.png', cv2.imencode('.png', complete)[1].tobytes())
+            for policy, expected in [('complete', [1]), ('all', [0, 1])]:
+                args = argparse.Namespace(input=str(archive), output=str(root / policy), crop=None,
+                                          workers=2, builds=policy)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    sd.run(args)
+                manifest = json.loads((root / policy / 'manifest.json').read_text())
+                self.assertEqual([group['representative'] for group in manifest['groups']], expected)
+
     def test_different_titles_on_shared_background_do_not_merge(self):
         for dark in (True, False):
             metric = sd.compare(feat(slide('Introduction', dark=dark)), feat(slide('Clinical foundations', dark=dark)))

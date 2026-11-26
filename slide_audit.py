@@ -74,7 +74,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
                 metric=compare(a,b)
                 if metric['content_replacement']:
                     continue
-                dup=min(ca,cb)>.96 and metric['changed']<.06 and min(metric['coverage_a'],metric['coverage_b'])>.87
+                dup=(not metric['localized_reveal'] and min(ca,cb)>.96 and metric['changed']<.06
+                     and min(metric['coverage_a'],metric['coverage_b'])>.87)
                 build=(getattr(args,'builds','complete')=='complete' and max(ca,cb)>.965
                        and min(ca,cb)>.42 and max(metric['coverage_a'],metric['coverage_b'])>.89
                        and metric['changed']<.40 and metric['mae']<.19)
@@ -126,6 +127,8 @@ def audit(source,items,groups,decisions,candidates,args,out):
             reasons.append('possible slide transition')
         if item['crop_confidence']<.78 or item.get('region_ambiguous'):
             reasons.append('check slide region')
+        if item['crop_mode']=='projected-screen':
+            reasons.append('check photographed screen')
         if min(item['slide_width'],item['slide_height'])<getattr(args,'min_short_edge',720) or max(item['slide_width'],item['slide_height'])<getattr(args,'min_long_edge',1280):
             reasons.append('low native resolution')
         if item['sharpness']<45:

@@ -18,10 +18,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from slide_regions import detect_region, extract, quality
+from slide_regions import detect_region, extract, quality, recover_projected_screen
 
 EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
-APP_VERSION = '2.2.0'
+APP_VERSION = '2.3.0'
 cv2.setNumThreads(1)
 
 
@@ -109,11 +109,17 @@ def compare(a, b):
         removed_total, added_total = int(removed.sum()), int(added.sum())
         replacement = bool(min(removed.max(), added.max()) >= 75
                            and min(removed_total, added_total) >= .55 * max(removed_total, added_total))
+    # A small reveal can satisfy both old thresholds. If one frame retains
+    # effectively all the other's edges and adds a localized block, treat it
+    # as content before comparing size/sharpness of equivalent captures.
+    localized_reveal = bool(duplicate and build and not replacement and local_change >= .20
+                            and max(cover_a, cover_b) >= .98 and abs(cover_a - cover_b) >= .025)
     return {'mae': round(mae, 5), 'changed': round(changed, 5),
             'coverage_a': round(cover_a, 4), 'coverage_b': round(cover_b, 4),
             'title_changed': round(title, 5), 'local_change':round(local_change,4),
-            'duplicate': duplicate and not replacement, 'build': build and not replacement,
-            'content_replacement': replacement}
+            'duplicate': duplicate and not replacement and not localized_reveal,
+            'build': bool(build and not replacement),
+            'content_replacement': replacement, 'localized_reveal': localized_reveal}
 
 
 def prepare(source, index, name, crop):
@@ -122,6 +128,11 @@ def prepare(source, index, name, crop):
     region = {'crop':crop,'quad':None,'crop_mode':'manual','crop_confidence':1.,
               'region_ambiguous':False,'region_candidates':1} if crop else detect_region(image)
     slide = extract(image, region)
+    if not crop:
+        recovered = recover_projected_screen(slide, region)
+        if recovered is not None:
+            region = recovered
+            slide = extract(image, region)
     normalized, gray, edges, descriptor = features(slide)
     return {'id': index, 'name': name, 'sha256':hashlib.sha256(data).hexdigest(), **region, **quality(slide),
             'width': image.shape[1], 'height': image.shape[0],
