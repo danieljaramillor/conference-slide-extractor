@@ -1,0 +1,67 @@
+name: Publish Conference Slide Extractor v2.16.0
+on:
+  push:
+    branches: ['release/publish-v2.16.0']
+    paths: ['.github/workflows/release-v2.16.0.yml']
+permissions:
+  contents: write
+  actions: read
+concurrency: publish-conference-slide-extractor-v2.16.0
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: danieljaramillor/conference-slide-extractor
+      TAG: v2.16.0
+      TARGET: f2ca677ca43eee3ec801d93889705c9242e44208
+      TESTED: 8ba9e8222892fa8f7132eaac813c885dad53c575
+      RUN_ID: '45914127104'
+      ARTIFACT_ID: '15161512568'
+      ARCHIVE_SHA256: 1800bcc33a22aa9f88070765a31e8c7eaebbf053af60bcb7df9a8836970fb2e6
+      EXE: ConferenceSlideExtractor-Windows-x64.exe
+    steps:
+      - name: Verify the merged source and tested artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/$GH_REPO"
+          gh api "$api/actions/runs/$RUN_ID" | jq -e --arg sha "$TESTED" '.head_sha == $sha and .conclusion == "success" and .path == ".github/workflows/build-windows.yml"'
+          test "$(gh api "$api/branches/main" --jq .commit.sha)" = "$TARGET"
+          test "$(gh api "$api/git/commits/$TESTED" --jq .tree.sha)" = "$(gh api "$api/git/commits/$TARGET" --jq .tree.sha)"
+          gh api "$api/actions/runs/$RUN_ID/artifacts" | jq -e --argjson id "$ARTIFACT_ID" '.artifacts | any(.id == $id and .expired == false and .name == "ConferenceSlideExtractor-Windows-x64")'
+          gh api "$api/actions/artifacts/$ARTIFACT_ID/zip" > package.zip
+          echo "$ARCHIVE_SHA256  package.zip" | sha256sum --check
+          unzip -j package.zip "$EXE" SHA256SUMS.txt -d dist
+          (cd dist && sha256sum --check --strict SHA256SUMS.txt)
+          gh api "$api/contents/RELEASE-NOTES.md?ref=$TARGET" --jq .content | base64 --decode > release-notes.md
+      - name: Upload and publish the verified Windows executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint="repos/$GH_REPO/releases"
+          id=$(gh api "$endpoint" --paginate | jq -sr --arg tag "$TAG" 'add | map(select(.tag_name == $tag)) | first | .id // empty')
+          if [[ -z "$id" ]]; then
+            id=$(gh api "$endpoint" -X POST -f tag_name="$TAG" -f target_commitish="$TARGET" -f name="Conference Slide Extractor 2.16.0" -F body=@release-notes.md -F draft=true --jq .id)
+          fi
+          gh api "$endpoint/$id" | jq -e --arg sha "$TARGET" '.target_commitish == $sha and .prerelease == false'
+          for name in "$EXE" SHA256SUMS.txt; do
+            if ! gh api "$endpoint/$id/assets" | jq -e --arg name "$name" 'any(.name == $name)' > /dev/null; then
+              gh release upload "$TAG" "dist/$name" --repo "$GH_REPO"
+            fi
+            expected="sha256:$(sha256sum "dist/$name" | cut -d' ' -f1)"
+            gh api "$endpoint/$id/assets" | jq -e --arg name "$name" --arg hash "$expected" 'any(.name == $name and .state == "uploaded" and .digest == $hash)'
+          done
+          if [[ "$(gh api "$endpoint/$id" --jq .draft)" = true ]]; then
+            gh api "$endpoint/$id" -X PATCH -F draft=false -f make_latest=true --jq .html_url
+          fi
+      - name: Verify the published tag and downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/tags/$TAG" | jq -e '.draft == false and .prerelease == false and .published_at != null'
+          test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$TARGET"
+          gh release download "$TAG" --repo "$GH_REPO" --pattern "$EXE" --pattern SHA256SUMS.txt --dir published
+          (cd published && sha256sum --check --strict SHA256SUMS.txt)
+          cmp "dist/$EXE" "published/$EXE"
